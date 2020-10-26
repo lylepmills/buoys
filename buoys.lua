@@ -1,5 +1,5 @@
--- pilings_v21.lua
--- sample folder loading
+-- pilings_v22.lua
+-- sound loading menu 
 
 -- TODO LIST
 -- use local variables
@@ -80,6 +80,19 @@ AUDIO_FILE = _path.dust.."audio/tehn/mancini2.wav"
 -- AUDIO_FILE = _path.dust.."audio/hermit-leaves.wav"
 AUDIO_DIRECTORY = _path.dust.."audio/tehn"
 
+function sound_option_formatter(value)
+  if value == 0 then
+    return "none"
+  end
+  
+  if not sample_details[value] then
+    return "none"
+  end
+  
+  cleaned_name, _ = split_file_extension(sample_details[value].name)
+  return cleaned_name
+end
+
 function offset_formatter(value)
   if value > 0 then
     return "+"..value
@@ -99,15 +112,14 @@ end
 function file_select_finished_callback(full_file_path)
   file_select_active = false
   if file ~= "cancel" then
-    load_sample_folder(full_file_path)
+    load_sound_folder(full_file_path)
   end
   
   exit_meta_mode()
 end
 
 -- TODO - is there any way to just terminate at the folder view in fileselect
--- TODONOW - test this is all working
-function load_sample_folder(full_file_path)
+function load_sound_folder(full_file_path)
   softcut.buffer_clear_channel(1)
   sample_details = {}
   next_sample_start_location = 1.0
@@ -118,12 +130,14 @@ function load_sample_folder(full_file_path)
     filename_lower = filename:lower()
     
     if string.find(filename_lower, ".wav") or string.find(filename_lower, ".aif") or string.find(filename_lower, ".aiff") then
-      load_sample(folder .. filename)
+      load_sound(folder .. filename)
     end
   end
+  
+  update_sound_options()
 end
 
-function load_sample(full_file_path)
+function load_sound(full_file_path)
   local _, samples, sample_rate = audio.file_info(full_file_path)
   local sample_duration = samples / sample_rate
   -- TODO - does sample rate have to be 48000?
@@ -139,7 +153,7 @@ function load_sample(full_file_path)
   softcut.buffer_read_mono(full_file_path, 0, next_sample_start_location, -1, 1, 1)
   _, filename = split_file_path(full_file_path)
   details = {
-    name = filename,  -- TODO - process filename to remove suffixes
+    name = filename,
     duration = sample_duration,
     start_location = next_sample_start_location,
   }
@@ -156,7 +170,18 @@ function split_file_path(full_file_path)
   return folder, file
 end
 
-BUOY_OPTIONS = {
+function split_file_extension(filename)
+  local split_at = string.match(filename, "^.*()%.")
+  local name_without_extension = string.sub(filename, 1, split_at - 1)
+  local extension = string.sub(filename, split_at + 1)
+  return name_without_extension, extension
+end
+
+function update_sound_options()
+  buoy_options[1].option_range = {0, #sample_details}
+end
+
+buoy_options = {
   -- TODO
   -- attack/decay (auto vs controlled)
   -- thresholds (hysteresis?)
@@ -167,6 +192,13 @@ BUOY_OPTIONS = {
   ---- volume
   ---- pan?
   ---- other options?
+  {
+    name = "sound",
+    default_value = 0,
+    option_range = {0, 0},
+    option_step_value = 1,
+    formatter = sound_option_formatter,
+  }, 
   {
     name = "looping",
     default_value = 1,
@@ -254,6 +286,7 @@ function init()
   was_editing_tides = false
   meta_mode = false
   meta_mode_option_index = 1
+  -- TODO - start the app off in file_select_active if there are no samples already loaded?
   file_select_active = false
   tide_height_multiplier = 1.0
   dispersion_ui_brightnesses = {}
@@ -529,11 +562,11 @@ function enc(n, d)
   else
     if n == 2 then
       -- TODO - this scrolls too fast
-      buoy_editing_option_scroll_index = util.clamp(buoy_editing_option_scroll_index + d, 1, #BUOY_OPTIONS)
+      buoy_editing_option_scroll_index = util.clamp(buoy_editing_option_scroll_index + d, 1, #buoy_options)
     end
     
     if n == 3 then
-      option_config = BUOY_OPTIONS[buoy_editing_option_scroll_index]
+      option_config = buoy_options[buoy_editing_option_scroll_index]
       
       old_value = buoy_editing_prototype.options[option_config.name]
       if option_config.option_range then
@@ -910,7 +943,7 @@ end
 function redraw_edit_buoy_screen()
   height = 40 - (buoy_editing_option_scroll_index * 10)
 
-  for option_index, option_config in pairs(BUOY_OPTIONS) do
+  for option_index, option_config in pairs(buoy_options) do
     if option_index == buoy_editing_option_scroll_index then
       screen.level(15)
     else
@@ -1118,7 +1151,7 @@ function Buoy:new(o)
   self.__index = self
   
   o.options = {}
-  for _, option_config in pairs(BUOY_OPTIONS) do
+  for _, option_config in pairs(buoy_options) do
     o.options[option_config.name] = option_config.default_value
   end
   
@@ -1234,7 +1267,9 @@ end
 function Buoy:update_option(name, value)
   self.options[name] = value
   
-  if name == "octave offset" then
+  if name == "sound" then
+    -- TODONOW - update softcut buffer position, duration according to sample_details
+  elseif name == "octave offset" then
     self:update_rate()
   elseif name == "semitone offset" then
     self:update_rate()
