@@ -1,5 +1,5 @@
--- pilings_v17.lua
--- improve wave generation for angled waves
+-- pilings_v19.lua
+-- supporting more buoy params
 
 -- TODO LIST
 -- use local variables
@@ -13,16 +13,31 @@
 ---- optional overflow mode?
 -- could dispersion look better if it were more concentric instead of UDLR?
 -- smoothing could/should be proportional to advance time
--- midi CC outputs? midi sync?
 -- some kind of estimation to make it faster when there are a lot of particles?
 -- use E1 as a macro control?
+-- wave sequencing?
+-- sample loading
+-- if wave depth can affect playhead position, that could be used for granular stuff
+-- in addition to height, you could have wave velocity play a role in sound parameters
+---- or simpler version, just have the sample start playing backward when the net velocity is backward
+-- max depth should really be 14 not 15...
+-- figure out how we're going to do slews - will they sound right for things like filtering?
+-- midi CC outputs, midi sync. midi note outputs - how would that work with velocity and such?
+-- crow support
+---- 4 cv outs (could also have triggers for crossing thresholds)
+---- 1 clock in, 1 assignable CV param?
+-- use util methods where possible
+---- many places we use math.floor we could use util.round
+-- meta mode
+---- sample loading
+---- global state saving/loading?
 
 RUN = true
 
 DISPERSION_MULTIPLE = 0.001
 
 ADVANCE_TIME = 0.2
-TIDE_GAP = 25
+TIDE_GAP = 32
 -- sinces waves move from left to right, they 
 -- will appear flipped vs these definitions
 BASE_TIDE_SHAPES = {
@@ -46,10 +61,11 @@ SMOOTHING_FACTOR = 4
 
 -- TODO - could these be tied to the rate at which waves are moving? ("auto" option)
 RATE_SLEW = 0.1
-LEVEL_SLEW = 0.2
+-- LEVEL_SLEW = 0.2
+LEVEL_SLEW = 0.02
 -- AUDIO_FILE = _path.dust.."audio/tehn/mancini1.wav"
--- AUDIO_FILE = _path.dust.."audio/tehn/mancini2.wav"
-AUDIO_FILE = _path.dust.."audio/tehn/drumlite.wav"
+AUDIO_FILE = _path.dust.."audio/tehn/mancini2.wav"
+-- AUDIO_FILE = _path.dust.."audio/tehn/drumlite.wav"
 -- AUDIO_FILE = _path.dust.."audio/hermit-leaves.wav"
 NUM_SOFTCUT_BUFFERS = 6
 
@@ -61,19 +77,33 @@ function offset_formatter(value)
   return tostring(value)
 end
 
+function zero_is_none_formatter(value)
+  if value == 0 then
+    return "none"
+  end
+  
+  return tostring(value)
+end
+
 BUOY_OPTIONS = {
   -- TODO
   -- attack/decay (auto vs controlled)
   -- thresholds (hysteresis?)
   -- sample
-  -- looping?
-  -- uninterruptible?
   -- depth envelope response
   ---- filter?
-  ---- min threshold
-  ---- min/max values
-  ---- volume
+  ---- pan?
   ---- other options?
+  {
+    name = "looping",
+    default_value = 1,
+    options = {"no", "yes"},
+  }, 
+  {
+    name = "uninterruptible",
+    default_value = 1,
+    options = {"no", "yes"},
+  },
   {
     name = "octave offset",
     default_value = 0,
@@ -94,6 +124,28 @@ BUOY_OPTIONS = {
     option_range = {-50, 50},
     option_step_value = 1,
     formatter = offset_formatter,
+  },
+  -- TODO - maybe high/low tide volume ranges should extend beyond [0.0, 1.0]
+  -- so that you could e.g. have volume max out before reaching absolute max depth?
+  {
+    name = "high tide volume",
+    default_value = 1.0,
+    option_range = {0.0, 1.0},
+    option_step_value = 0.01,
+  },
+  {
+    name = "low tide volume",
+    default_value = 0.0,
+    option_range = {0.0, 1.0},
+    option_step_value = 0.01,
+  },
+  -- TODO - separate play/reset thresholds?
+  {
+    name = "reset threshold",
+    default_value = 1,
+    option_range = {0, 15},
+    option_step_value = 1,
+    formatter = zero_is_none_formatter,
   },
 }
 
@@ -120,10 +172,10 @@ function init()
 
   old_grid_lighting = fresh_grid(params:get("min_bright"))
   new_grid_lighting = fresh_grid(params:get("min_bright"))
+  tide_depths = fresh_grid(0)
   current_angle_gaps = angle_gaps()
   tide_interval_counter = 0
   smoothing_counter = 0
-  held_grid_keys_counter = 0
   tide_info_overlay_countdown = 0
   key_states = {0, 0, 0}
   was_editing_tides = false
@@ -167,34 +219,14 @@ function init_params()
   params:add{ type = "number", id = "dispersion", name = "dispersion", min = 0, max = 25, default = 10 }
   params:add_separator()
   params:add{ type = "number", id = "min_bright", name = "min brightness", min = 1, max = 3, default = 1 }
-  params:add{ type = "number", id = "max_bright", name = "max brightness", min = 10, max = 15, default = 15 }
+  -- TODO - when "max_depth" updates, we should clear excess particles
+  params:add{ type = "number", id = "max_depth", name = "max depth", min = 8, max = 14, default = 14 }
   params:add{ type = "option", id = "smoothing", name = "visual smoothing", options = { "on", "off" } }
 end
 
 function init_softcut()
   softcut.buffer_clear()
-  -- softcut.buffer_read_mono(AUDIO_FILE, 0, 0, -1, 0, 0)
-  
-  -- buffer_read_mono (file, start_src, start_dst, dur, ch_src, ch_dst)
   softcut.buffer_read_mono(AUDIO_FILE, 0, 1, -1, 1, 1)
-  -- -- enable voice 1
-  -- softcut.enable(1,1)
-  -- -- set voice 1 to buffer 1
-  -- softcut.buffer(1,1)
-  -- -- set voice 1 level to 1.0
-  -- softcut.level(1,1.0)
-  -- -- voice 1 enable loop
-  -- softcut.loop(1,0)
-  -- -- set voice 1 loop start to 1
-  -- softcut.loop_start(1,1)
-  -- -- set voice 1 loop end to 2
-  -- softcut.loop_end(1,7)
-  -- -- set voice 1 position to 1
-  -- softcut.position(1,1)
-  -- -- set voice 1 rate to 1.0
-  -- softcut.rate(1,1.0)
-  -- -- enable voice 1 play
-  -- softcut.play(1,1)
   
   buffer_buoy_map = {}
 
@@ -204,7 +236,7 @@ function init_softcut()
     softcut.level(i, 1.0)
     softcut.loop(i, 0)
     softcut.loop_start(i, 1.0)
-    softcut.loop_end(i, 7.0)
+    softcut.loop_end(i, 6.0)
     softcut.position(i, 1.0)
     softcut.rate(i, 1.0)
     buffer_buoy_map[i] = nil
@@ -226,14 +258,24 @@ function background_metro_tasks()
 end
 
 function mark_buoy_being_edited(x, y)
-  -- TODO - if creating a new one, and there is a prototype, copy its attributes
-  buoys[y][x] = buoys[y][x] or Buoy:new()
+  if not buoys[y][x] then
+    buoys[y][x] = Buoy:new()
+    
+    -- if newly creating a buoy, and there is another buoy also being edited which
+    -- serves as the prototype (i.e. its key was pressed first), copy the attributes
+    -- of the original to this new buoy
+    if buoy_editing_prototype then
+      for k, v in pairs(buoy_editing_prototype.options) do
+        buoys[y][x]:update_option(k, v)
+      end
+    end
+  end
+
   buoys[y][x].being_edited = true
-  buoys[y][x].active = true
+  buoys[y][x]:activate()
 end
 
 function update_held_grid_keys()
-  held_grid_keys_counter = held_grid_keys_counter + 1
   keys_held = grid_keys_held()
   newly_editing_buoys = false
   clear_grid = false
@@ -259,11 +301,14 @@ function update_held_grid_keys()
   end
   
   if newly_editing_buoys then
+    -- we attempt to load buoy_editing_prototype twice so that it can be used for copying
+    -- in mark_buoy_being_edited (when there may or may not already be a prototype to copy), 
+    -- and also elsewhere (when there *must* be a prototype)
+    buoy_editing_prototype = buoys[longest_held_key[2]][longest_held_key[1]]
     for _, key_held in pairs(keys_held) do
       x, y = key_held[1], key_held[2]
       mark_buoy_being_edited(x, y)
     end
-    
     buoy_editing_prototype = buoys[longest_held_key[2]][longest_held_key[1]]
 
     redraw_screen()
@@ -357,10 +402,14 @@ function enc(n, d)
       option_config = BUOY_OPTIONS[buoy_editing_option_scroll_index]
       
       old_value = buoy_editing_prototype.options[option_config.name]
-      new_value = util.clamp(
-        old_value + (d * option_config.option_step_value),
-        option_config.option_range[1],
-        option_config.option_range[2])
+      if option_config.option_range then
+        new_value = util.clamp(
+          old_value + (d * option_config.option_step_value),
+          option_config.option_range[1],
+          option_config.option_range[2])
+      else
+        new_value = util.clamp(old_value + d, 1, #option_config.options)
+      end
       
       for x = 1, g.cols do
         for y = 1, g.rows do
@@ -393,14 +442,11 @@ function smoothly_make_tides()
   end
 end
 
--- TODO - a bit ugly to use the min_bright value here
--- as the baseline - could probably refactor
 function update_buoy_depths()
   for x = 1, g.cols do
     for y = 1, g.rows do
       if buoys[y][x] then
-        depth = new_grid_lighting[y][x] - params:get("min_bright")
-        buoys[y][x]:update_depth(depth)
+        buoys[y][x]:update_depth(tide_depths[y][x])
       end
     end
   end
@@ -423,7 +469,8 @@ function make_tides()
   end
   
   velocity_averaging()
-  particles_to_lighting()
+  particles_to_tide_depths()
+  tide_depths_to_lighting()
 end
 
 function new_tide(position)
@@ -606,15 +653,15 @@ function clear_particles(x, y)
   particles = new_particles
 end
 
-function particles_to_lighting()
+function particles_to_tide_depths()
   new_particles = {}
-  new_grid_lighting = fresh_grid(params:get("min_bright"))
+  tide_depths = fresh_grid(0)
   
   for _, particle in ipairs(particles) do
     x, y = particle.x_pos, particle.y_pos
 
-    if new_grid_lighting[y][x] < params:get("max_bright") then
-      new_grid_lighting[y][x] = new_grid_lighting[y][x] + 1
+    if tide_depths[y][x] < params:get("max_depth") then
+      tide_depths[y][x] = tide_depths[y][x] + 1
       table.insert(new_particles, particle)
     else
       -- discard excess particles
@@ -624,11 +671,29 @@ function particles_to_lighting()
   particles = new_particles
 end
 
+function tide_depths_to_lighting()
+  for x = 1, g.cols do
+    for y = 1, g.rows do
+      new_grid_lighting[y][x] = math.min(tide_depths[y][x] + params:get("min_bright"), 15)
+    end
+  end
+end
+
 function is_piling(x, y)
   if params:get("channel_style") == 2 and (y < 1 or y > g.rows) then
     return true
   end
   return find_in_grid(x, y, pilings, 0) ~= 0
+end
+
+function add_piling(x, y)
+  pilings[y][x] = 1
+  clear_particles(x, y)
+end
+
+function remove_piling(x, y)
+  pilings[y][x] = 0
+  clear_particles(x, y)
 end
 
 function find_in_grid(x, y, grid, default)
@@ -652,7 +717,10 @@ function grid_transition(proportion)
   return result
 end
 
--- TODO - standard seems to be to just call this redraw()
+function redraw()
+  redraw_screen()
+end
+
 function redraw_screen()
   screen.clear()
   screen.aa(1)
@@ -698,7 +766,15 @@ function redraw_edit_buoy_screen()
     
     buoy_value = buoy_editing_prototype.options[option_config.name]
     screen.move(128, height)
-    screen.text_right(option_config.formatter(buoy_value))
+
+    if option_config.formatter then
+      option_value_text = option_config.formatter(buoy_value)
+    elseif option_config.options then
+      option_value_text = option_config.options[buoy_value]
+    else
+      option_value_text = tostring(buoy_value)
+    end
+    screen.text_right(option_value_text)
     
     height = height + 10
   end
@@ -826,10 +902,6 @@ function redraw_grid_lights_main_view()
   g:refresh()
 end
 
-function max_depth()
-  return params:get("max_bright") - params:get("min_bright")
-end
-
 function fresh_grid(b)
   return {
     {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
@@ -885,7 +957,7 @@ Buoy = {
   previous_depth = 0,
   depth = 0,
   softcut_buffer = -1,
-  active_start_counter = -1,  -- held_grid_keys_counter
+  active_start_time = -1,
 }
 
 function Buoy:new(o)
@@ -901,46 +973,90 @@ function Buoy:new(o)
   return o
 end
 
--- TODO - work on parameterization like multiple samples, etc
-function Buoy:update_depth(new_depth)
-  self.previous_depth = self.depth
-  self.depth = new_depth
-  
-  if self.depth == self.previous_depth then
-    return
-  end
-  
+function Buoy:activate()
+  self.active = true
+end
+
+function Buoy:deactivate()
+  self.active = false
+  self:release_softcut_buffer()
+end
+
+function Buoy:release_softcut_buffer()
   if self.softcut_buffer > 0 then
-    new_level = self.depth / max_depth()
-    softcut.level(self.softcut_buffer, new_level)
-  end
-  
-  if self.previous_depth == 0 then
-    self.softcut_buffer = next_softcut_buffer()
-    self.active_start_counter = held_grid_keys_counter
-    old_buffer_buoy = buffer_buoy_map[self.softcut_buffer]
-    if old_buffer_buoy then
-      old_buffer_buoy.softcut_buffer = -1
-    end
-    buffer_buoy_map[self.softcut_buffer] = self
-    
-    softcut.level(self.softcut_buffer, 1.0 * self.depth / max_depth())
-    softcut.position(self.softcut_buffer, 1)
-    self:update_rate()
-    softcut.play(self.softcut_buffer, 1)
-  elseif self.depth == 0 then
     softcut.play(self.softcut_buffer, 0)
     buffer_buoy_map[self.softcut_buffer] = nil
     self.softcut_buffer = -1
   end
 end
 
--- voice stealing by round robin
--- TODO - should round robin ejection be the only option, or
--- should there be other modes like no voice stealing?
+-- TODO - work on parameterization like multiple samples, etc
+function Buoy:update_depth(new_depth)
+  self.previous_depth = self.depth
+  self.depth = new_depth
+  
+  -- TODO - if you disable a buoy while it's still playing, it
+  -- just keeps playing, i.e. this doesn't take immediate effect
+  if not self.active then
+    return
+  end
+  
+  if self.depth == self.previous_depth then
+    return
+  end
+  
+  self:update_volume()
+  
+  if self:newly_exceeds_threshold() then
+    -- TODO - what if there were no buffers available?
+    self:grab_softcut_buffer()
+    self:setup_softcut_params()
+    self.active_start_time = util.time()
+    softcut.position(self.softcut_buffer, 1.0)
+    softcut.play(self.softcut_buffer, 1)
+  end
+end
+
+function Buoy:setup_softcut_params()
+  self:update_volume()
+  self:update_rate()
+  self:update_looping()
+end
+
+function Buoy:grab_softcut_buffer()
+  if self.softcut_buffer > 0 then
+    return
+  end
+  
+  self.softcut_buffer = next_softcut_buffer()
+  
+  -- if there are a lot of active uninterruptible buffers
+  -- it's possible we might not be able to grab one
+  if not (self.softcut_buffer > 0) then
+    return
+  end
+  
+  old_buffer_buoy = buffer_buoy_map[self.softcut_buffer]
+  if old_buffer_buoy then
+    old_buffer_buoy:release_softcut_buffer()
+  end
+  
+  buffer_buoy_map[self.softcut_buffer] = self
+end
+
+function Buoy:newly_exceeds_threshold()
+  reset_threshold = self.options["reset threshold"]
+  if reset_threshold < 1 then
+    return false
+  end
+  
+  return (self.previous_depth < reset_threshold) and (self.depth >= reset_threshold)
+end
+
+-- oldest voices are stolen first, unless marked uninterruptible
 function next_softcut_buffer()
-  oldest_active_start_counter = math.huge
-  best_candidate = 1
+  oldest_active_start_time = math.huge
+  best_candidate = nil
   
   for i = 1, NUM_SOFTCUT_BUFFERS do
     buoy = buffer_buoy_map[i]
@@ -948,9 +1064,15 @@ function next_softcut_buffer()
       return i
     end
     
-    if buoy.active_start_counter < oldest_active_start_counter then
-      best_candidate = i
-      oldest_active_start_counter = buoy.active_start_counter
+    -- TODO - interruptibles that are non-looping should still be interruptible if
+    -- they are done playing, i.e. if util.time() - active_start_time > sample length
+    is_uninterruptible = buoy.options["uninterruptible"] == 2
+    
+    if not is_uninterruptible then
+      if buoy.active_start_time < oldest_active_start_time then
+        best_candidate = i
+        oldest_active_start_time = buoy.active_start_time
+      end
     end
   end
   
@@ -960,14 +1082,39 @@ end
 function Buoy:update_option(name, value)
   self.options[name] = value
   
-  -- TODO - update with more option types
   if name == "octave offset" then
     self:update_rate()
   elseif name == "semitone offset" then
     self:update_rate()
   elseif name == "cent offset" then
     self:update_rate()
+  elseif name == "looping" then
+    self:update_looping()
   end
+end
+
+function Buoy:update_volume()
+  if self.softcut_buffer < 0 then
+    return
+  end
+  
+  ltv = self.options["low tide volume"]
+  htv = self.options["high tide volume"]
+  new_level = ltv + ((htv - ltv) * self:tide_ratio())
+  softcut.level(self.softcut_buffer, new_level)
+end
+
+function Buoy:tide_ratio()
+  return self.depth / params:get("max_depth")
+end
+
+function Buoy:update_looping()
+  if self.softcut_buffer < 1 then
+    return
+  end
+  
+  is_looping = self.options["looping"] == 2
+  softcut.loop(self.softcut_buffer, is_looping and 1 or 0)
 end
 
 function Buoy:update_rate()
@@ -999,23 +1146,33 @@ g.key = function(x, y, z)
     end
   else
     if z == 0 then
-      if buoys[y][x] and (buoys[y][x].being_edited or buoys[y][x].active) then
-        if buoys[y][x].being_edited then
-          buoys[y][x].being_edited = false
-        elseif buoys[y][x].active then
-          buoys[y][x].active = false
-        end
+      if buoys[y][x] and buoys[y][x].being_edited then
+        buoys[y][x].being_edited = false
       else
-        pilings[y][x] = is_piling(x, y) and 0 or 1
-        clear_particles(x, y)
+        -- if there's already a buoy, pressing a grid key switches between
+        -- [buoy, piling, nothing], otherwise it just switches between
+        -- [buoy, nothing] until a piling is explicitly placed there by
+        -- a longpress
+        if buoys[y][x] then
+          if buoys[y][x].active then
+            buoys[y][x]:deactivate()
+            add_piling(x, y)
+          elseif is_piling(x, y) then
+            remove_piling(x, y)
+          else
+            buoys[y][x]:activate()
+          end
+        else
+          if is_piling(x, y) then
+            remove_piling(x, y)
+          else
+            add_piling(x, y)
+          end
+        end
       end
-      
-      held_grid_keys[y][x] = 0
     end
     
-    if z == 1 then
-      held_grid_keys[y][x] = 1
-    end
+    held_grid_keys[y][x] = z
   end
   
   redraw_lights()
