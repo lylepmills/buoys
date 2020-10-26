@@ -1,15 +1,12 @@
--- pilings_v34.lua
--- pausing/unpausing options
+-- pilings_v35.lua
+-- hysteresis for play/reset thresholds
 -- tidal influencer/activator/lightshow
 
 -- TODO LIST
 -- REMAINING FEATURES
--- more extended_only params
----- hysteresis for triggered thresholds
 -- negative rates
 ---- have the sample start playing backward when the net velocity is backward (make this optional)
--- settable start/end points for samples?
--- dead zone arc animation of some kind
+-- settable start/end points for samples
 -- autosave periodically?
 
 -- LAST FEW THINGS
@@ -45,13 +42,15 @@
 --    when a bunch of them get stuck up against a wall
 
 -- ACKNOWLEDGEMENTS
--- I borrowed some file/folder loading logic from Timber Player, and some midi
--- stuff from Changes, thanks @markeats.
+-- Thanks to John Sloan for feedback on the concept and the interface
+-- at several points along the way.
+-- I borrowed some file/folder loading logic from Timber Player, and 
+-- some midi stuff from Changes, thanks @markeats.
 
 fileselect = require "fileselect"
 
 RUN = true
-RUN_SIMPLE = false
+RUN_SIMPLE = true
 
 DISPERSION_MULTIPLE = 0.001
 
@@ -208,11 +207,25 @@ ALL_BUOY_OPTIONS = {
     formatter = zero_is_none_formatter,
   },
   {
+    name = "play threshold hysteresis",
+    default_value = 1,
+    option_range = {1, 14},
+    option_step_value = 1,
+    extended_only = true,
+  },
+  {
     name = "reset threshold",
     default_value = 0,
     option_range = {0, 14},
     option_step_value = 1,
     formatter = zero_is_none_formatter,
+  },
+  {
+    name = "reset threshold hysteresis",
+    default_value = 1,
+    option_range = {1, 14},
+    option_step_value = 1,
+    extended_only = true,
   },
   { name = "OPTION_SPACER" },
   {
@@ -1028,11 +1041,18 @@ function init_crow()
 end
 
 function softcut_event_phase_callback(voice, phase)
-  if phase > 0.0 then
-    buoy = buffer_buoy_map[voice]
-    if not buoy:is_looping() then
-      buffer_buoy_map[voice].playing = false
-    end
+  print("phase: "..phase)
+  buoy = buffer_buoy_map[voice]
+  -- the use of just_started is a hack to get around the fact that phase
+  -- isn't reliably reset to 0.0 when the start point is reset (or by
+  -- any other means I could figure out)
+  if buoy.just_started then
+    buoy.just_started = false
+    return
+  end
+  
+  if not buoy:is_looping() then
+    buffer_buoy_map[voice].playing = false
   end
 end
 
@@ -1220,6 +1240,8 @@ function meta_mode_keys_held()
   
   return true
 end
+
+
 
 function update_dispersion_ui()
   for i = 1, 64 do
@@ -2014,8 +2036,13 @@ function redraw_arc_lights()
   a:led(3, led_offset + 33 + orientation_offset, 5)
 
   -- dispersion
+  dead_zone = dispersion_factor() == 0.0 
   for i = 1, 64 do
-    a:led(4, i, dispersion_ui_brightnesses[i])
+    if dead_zone then
+      a:led(4, i, 1)
+    else
+      a:led(4, i, dispersion_ui_brightnesses[i])
+    end
   end
   a:refresh()
 end
@@ -2153,11 +2180,14 @@ end
 Buoy = {
   active = false,
   playing = false,
+  just_started = false,
   being_edited = false,
   previous_depth = 0,
   depth = 0,
   softcut_buffer = -1,
   active_start_time = -1,
+  play_triggerable = true,
+  reset_triggerable = true,
 }
 
 function Buoy:new(o)
@@ -2184,6 +2214,7 @@ end
 
 function Buoy:release_softcut_buffer()
   self.playing = false
+  self.just_started = false
   
   if self:has_softcut_buffer() then
     softcut.play(self.softcut_buffer, 0)
@@ -2211,12 +2242,18 @@ function Buoy:update_depth(new_depth)
   self:update_crow()
   self:update_midi_cc_output()
   
-  if self:newly_exceeds_play_threshold() then
+  if self.play_triggerable and self:newly_exceeds_play_threshold() then
+    self.play_triggerable = false
     self:start_playing()
+  elseif (not self.play_triggerable) and self:newly_below_play_threshold_with_hysteresis() then
+    self.play_triggerable = true
   end
   
-  if self:newly_exceeds_reset_threshold() then
+  if self.reset_triggerable and self:newly_exceeds_reset_threshold() then
+    self.reset_triggerable = false
     self:reset_playhead()
+  elseif (not self.reset_triggerable) and self:newly_below_reset_threshold_with_hysteresis() then
+    self.reset_triggerable = true
   end
 end
 
@@ -2226,6 +2263,7 @@ function Buoy:reset_playhead()
   end
   
   -- update_sound will reset playhead position
+  self.just_started = true
   self:update_sound()
   self.active_start_time = util.time()
   self.playing = true
@@ -2247,6 +2285,7 @@ function Buoy:start_playing()
     return
   end
   
+  self.just_started = true
   self:setup_softcut_params()
   self.active_start_time = util.time()
   self.playing = true
@@ -2297,6 +2336,15 @@ function Buoy:newly_exceeds_reset_threshold()
   return (self.previous_depth < reset_threshold) and (self.depth >= reset_threshold)
 end
 
+function Buoy:newly_below_reset_threshold_with_hysteresis()
+  threshold_with_hysteresis = self.options["reset threshold"] - self.options["reset threshold hysteresis"]
+  if threshold_with_hysteresis < 0 then
+    return false
+  end
+  
+  return (self.previous_depth > threshold_with_hysteresis) and (self.depth <= threshold_with_hysteresis)
+end
+
 function Buoy:newly_exceeds_play_threshold()
   play_threshold = self.options["play threshold"]
   if play_threshold < 1 then
@@ -2304,6 +2352,15 @@ function Buoy:newly_exceeds_play_threshold()
   end
   
   return (self.previous_depth < play_threshold) and (self.depth >= play_threshold)
+end
+
+function Buoy:newly_below_play_threshold_with_hysteresis()
+  threshold_with_hysteresis = self.options["play threshold"] - self.options["play threshold hysteresis"]
+  if threshold_with_hysteresis < 0 then
+    return false
+  end
+  
+  return (self.previous_depth > threshold_with_hysteresis) and (self.depth <= threshold_with_hysteresis)
 end
 
 -- oldest voices are stolen first unless marked uninterruptible, in which case
