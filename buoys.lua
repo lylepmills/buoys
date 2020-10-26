@@ -1,11 +1,8 @@
--- pilings
--- wave drawing on screen
+-- added velocity to dispersion
+-- removed screen drawing
 
 RUN = true
 SHOW_GRID = true
-
-SCREEN_MODE = 'waves'
--- SCREEN_MODE = 'pilings'
 
 DISPERSION_MULTIPLE = 0.001
 
@@ -17,6 +14,7 @@ TIDE_SHAPE = {1, 3, 6, 10, 9, 8, 6, 4, 1}
 COLLISION_OVERALL_DAMPING = 0.2
 COLLISION_DIRECTIONAL_DAMPING = 0.5
 VELOCITY_AVERAGING_FACTOR = 0.6
+DISPERSION_VELOCITY_FACTOR = 0.075
 POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
 
 g = grid.connect()
@@ -27,12 +25,13 @@ function init()
   params:add{ type = "option", id = "channel_style", name = "channel style", options = { "open", "flume" } }
   params:add_separator()
   params:add{ type = "number", id = "angle", name = "wave angle", min = -60, max = 60, default = 0, formatter = degree_formatter }
+  -- TODO = rename to wave speed
   cs_advance_time = controlspec.new(0.05, 1.0, "lin", 0, 0.2, "seconds")
   params:add{ type = "control", id = "advance_time", name = "advance time", controlspec = cs_advance_time, action = update_advance_time }
   params:add_separator()
   params:add{ type = "number", id = "dispersion", name = "dispersion", min = 0, max = 25, default = 10 }
   params:add_separator()
-  params:add{ type = "number", id = "min_bright", name = "min brightness", min = 1, max = 3, default = 2 }
+  params:add{ type = "number", id = "min_bright", name = "min brightness", min = 1, max = 3, default = 1 }
   params:add{ type = "number", id = "max_bright", name = "max brightness", min = 10, max = 15, default = 15 }
   params:add{ type = "number", id = "smoothing", name = "smoothing", min = 3, max = 6, default = 4 }
 
@@ -67,16 +66,6 @@ function degree_formatter(tbl)
   return tbl.value .. " degrees"
 end
 
-g.key = function(x, y, z)
-  if z == 1 then
-    pilings[y][x] = is_piling(x, y) and 0 or 1
-    clear_particles(x, y)
-  end
-  
-  redraw_lights()
-  redraw_screen()
-end
-
 function smoothly_make_tides()
   if run then
     smoothing_counter = (smoothing_counter + 1) % params:get("smoothing")
@@ -84,7 +73,7 @@ function smoothly_make_tides()
       make_tides()
     end
     
-    redraw_screen()
+    -- redraw_screen()
     redraw_lights()
   end
 end
@@ -94,6 +83,7 @@ function make_tides()
   disperse()
   roll_forward()
   
+  -- TODO - should this just use TIDE_GAP so you can set lower gaps than shape size?
   tide_interval_counter = (tide_interval_counter % (TIDE_GAP + #TIDE_SHAPE)) + 1
   if tide_interval_counter == 1 then
     current_angle_gaps = angle_gaps()
@@ -176,6 +166,17 @@ function disperse()
       particle.x_pos = new_x
       particle.y_pos = new_y
       
+      -- NEW CODE START
+      density = particle_counts[y][x]
+      density_diff = density - find_in_grid(new_x, new_y, particle_counts, density - 1)
+      -- DISPERSION_VELOCITY_FACTOR
+      particle.x_vel = particle.x_vel + (disperse_direction.x * DISPERSION_VELOCITY_FACTOR * density_diff)
+      particle.y_vel = particle.y_vel + (disperse_direction.y * DISPERSION_VELOCITY_FACTOR * density_diff)
+      -- NEW CODE END
+
+      
+      -- TODO - when we disperse, add a small velocity accordingly?
+      
       particle_counts[y][x] = particle_counts[y][x] - 1
       particle_counts[new_y][new_x] = particle_counts[new_y][new_x] + 1
     end
@@ -197,10 +198,12 @@ function roll_forward()
       -- x collision
       if is_piling(x + x_delta, y) then
         x_delta = 0
+        -- TODO - handle backwards momentum?
         -- currently no way for a particle to actually change direction
         xv_delta = x_vel * COLLISION_DIRECTIONAL_DAMPING * -1
         yv_delta = math.abs(xv_delta) * (1 - COLLISION_OVERALL_DAMPING)
         
+        -- TODO - flip coin probabalistically to favor existing vel direction?
         if flip_coin() then
           yv_delta = yv_delta * -1
         end
@@ -219,6 +222,7 @@ function roll_forward()
         yv_delta = y_vel * COLLISION_DIRECTIONAL_DAMPING * -1
         xv_delta = math.abs(yv_delta) * (1 - COLLISION_OVERALL_DAMPING)
         
+        -- TODO - flip coin probabalistically to favor existing vel direction?
         if flip_coin() then
           xv_delta = xv_delta * -1
         end
@@ -329,6 +333,22 @@ function redraw_screen()
   screen.clear()
   screen.aa(1)
   
+  redraw_flume_edges()
+  
+  screen.level(15)
+  for x = 1, g.cols do
+    for y = 1, g.rows do
+      if is_piling(x, y) then
+        screen.circle(x * 8 - 4, y * 8 - 4, 3.4)
+        screen.fill()
+      end
+    end
+  end
+  
+  screen.update()
+end
+
+function redraw_flume_edges()
   if params:get("channel_style") == 2 then
     screen.level(15)
     screen.rect(0, 0, 128, 1)
@@ -340,78 +360,6 @@ function redraw_screen()
     screen.fill()
     screen.rect(0, 62, 128, 1)
     screen.fill()
-  end
-  
-  if SCREEN_MODE == 'pilings' then
-    redraw_screen_pilings_only()
-  elseif SCREEN_MODE == 'waves' then
-    redraw_screen_with_waves()
-  end
-  
-  screen.update()
-end
-
-function redraw_screen_pilings_only()
-  screen.level(15)
-  for x = 1, g.cols do
-    for y = 1, g.rows do
-      if is_piling(x, y) then
-        screen.circle(x * 8 - 4, y * 8 - 4, 3.4)
-        screen.fill()
-      end
-    end
-  end
-end
-
-function redraw_screen_with_waves()
-  particle_counts = fresh_grid()
-  for _, particle in ipairs(particles) do
-    x, y = particle.x_pos, particle.y_pos
-    particle_counts[y][x] = particle_counts[y][x] + 1
-  end
-  
-  for x = 1, 33 do
-    for y = 1, 17 do
-      density = 0
-      
-      if x % 2 == 0 and y % 2 == 0 then
-        density = find_in_grid(x / 2, y / 2, particle_counts, 0)
-      end
-      
-      if x % 2 == 0 and y % 2 == 1 then
-        density_below = find_in_grid(x / 2, (y + 1) / 2, particle_counts, 0)
-        density_above = find_in_grid(x / 2, (y - 1) / 2, particle_counts, 0)
-        density = round((density_below + density_above) / 2)
-      end
-      
-      if x % 2 == 1 and y % 2 == 0 then
-        density_left = find_in_grid((x - 1) / 2, y / 2, particle_counts, 0)
-        density_right = find_in_grid((x + 1) / 2, y / 2, particle_counts, 0)
-        density = round((density_left + density_right) / 2)
-      end
-      
-      if x % 2 == 1 and y % 2 == 1 then
-        density_above_left = find_in_grid((x - 1) / 2, (y - 1) / 2, particle_counts, 0)
-        density_above_right = find_in_grid((x + 1) / 2, (y - 1) / 2, particle_counts, 0)
-        density_below_left = find_in_grid((x - 1) / 2, (y + 1) / 2, particle_counts, 0)
-        density_below_right = find_in_grid((x + 1) / 2, (y + 1) / 2, particle_counts, 0)
-        density = round((density_above_left + density_above_right + density_below_left + density_below_right) / 4)
-      end
-      
-      screen.level(density)
-      screen.rect((x * 4) - 6, (y * 4) - 6, 4, 4)
-      screen.fill()
-    end
-  end
-  
-  screen.level(15)
-  for x = 1, g.cols do
-    for y = 1, g.rows do
-      if is_piling(x, y) then
-        screen.circle(x * 8 - 4, y * 8 - 4, 3.4)
-        screen.stroke()
-      end
-    end
   end
 end
 
@@ -475,4 +423,16 @@ function deep_copy(obj)
   local res = {}
   for k, v in pairs(obj) do res[deep_copy(k)] = deep_copy(v) end
   return res
+end
+
+-- grid
+
+g.key = function(x, y, z)
+  if z == 1 then
+    pilings[y][x] = is_piling(x, y) and 0 or 1
+    clear_particles(x, y)
+  end
+  
+  redraw_lights()
+  redraw_screen()
 end
