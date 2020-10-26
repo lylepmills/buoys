@@ -1,5 +1,5 @@
--- pilings_v35.lua
--- hysteresis for play/reset thresholds
+-- pilings_v36.lua
+-- fixed logic for determining when sample is finished playing
 -- tidal influencer/activator/lightshow
 
 -- TODO LIST
@@ -33,12 +33,11 @@
 -- 2. stereo samples
 -- 3. better alternate sample rate support
 --    (https://llllllll.co/t/norns-2-0-softcut/20550/176)
--- 4. use second crow input as assignable CV control
--- 5. expanded midi support (note on triggers, velocity, poly aftertouch?)
--- 6. find a good way to support loading samples from multiple folders
--- 7. filter slew options (when possible in softcut)
--- 8. MYSTERY E1 FEATURE???
--- 9. more realistic behavior when tides exceed max tide depth, e.g.
+-- 4. expanded midi support (note on triggers, velocity, poly aftertouch?)
+-- 5. find a good way to support loading samples from multiple folders
+-- 6. filter slew options (when possible in softcut)
+-- 7. MYSTERY E1 FEATURE???
+-- 8. more realistic behavior when tides exceed max tide depth, e.g.
 --    when a bunch of them get stuck up against a wall
 
 -- ACKNOWLEDGEMENTS
@@ -50,7 +49,7 @@
 fileselect = require "fileselect"
 
 RUN = true
-RUN_SIMPLE = true
+RUN_SIMPLE = false
 
 DISPERSION_MULTIPLE = 0.001
 
@@ -552,6 +551,7 @@ function load_sound(full_file_path)
   local sample_duration = samples / sample_rate
   if sample_rate ~= 48000 then
     sample_rate_warning_countdown = 30
+    return
   end
   
   if (next_sample_start_location + sample_duration) > softcut.BUFFER_SIZE then
@@ -1041,18 +1041,14 @@ function init_crow()
 end
 
 function softcut_event_phase_callback(voice, phase)
-  print("phase: "..phase)
   buoy = buffer_buoy_map[voice]
-  -- the use of just_started is a hack to get around the fact that phase
-  -- isn't reliably reset to 0.0 when the start point is reset (or by
-  -- any other means I could figure out)
-  if buoy.just_started then
-    buoy.just_started = false
+  
+  if buoy:is_looping() then
     return
   end
   
-  if not buoy:is_looping() then
-    buffer_buoy_map[voice].playing = false
+  if buoy.loop_end_time - phase < 0.02 then
+    buoy.playing = false
   end
 end
 
@@ -1076,6 +1072,7 @@ function init_softcut()
     softcut.rate_slew_time(i, 0.0)
     softcut.level_slew_time(i, ADVANCE_TIME)
     softcut.pan_slew_time(i, ADVANCE_TIME)
+    softcut.phase_quant(i, 0.01)
   end
   
   softcut.event_phase(softcut_event_phase_callback)
@@ -1875,9 +1872,9 @@ function redraw_external_clock_warning()
 end
 
 function redraw_sample_rate_warning()
-  first_line = "non-48k sound files loaded"
-  second_line = "these sounds can be used"
-  third_line = "but will sound affected"
+  first_line = "found non-48k files"
+  second_line = "these files cannot"
+  third_line = "be loaded"
   redraw_warning_screen(first_line, second_line, third_line)
 end
 
@@ -2180,7 +2177,6 @@ end
 Buoy = {
   active = false,
   playing = false,
-  just_started = false,
   being_edited = false,
   previous_depth = 0,
   depth = 0,
@@ -2188,6 +2184,8 @@ Buoy = {
   active_start_time = -1,
   play_triggerable = true,
   reset_triggerable = true,
+  loop_start_time = -1,
+  loop_end_time = -1,
 }
 
 function Buoy:new(o)
@@ -2214,8 +2212,7 @@ end
 
 function Buoy:release_softcut_buffer()
   self.playing = false
-  self.just_started = false
-  
+
   if self:has_softcut_buffer() then
     softcut.play(self.softcut_buffer, 0)
     buffer_buoy_map[self.softcut_buffer] = nil
@@ -2263,7 +2260,6 @@ function Buoy:reset_playhead()
   end
   
   -- update_sound will reset playhead position
-  self.just_started = true
   self:update_sound()
   self.active_start_time = util.time()
   self.playing = true
@@ -2285,7 +2281,6 @@ function Buoy:start_playing()
     return
   end
   
-  self.just_started = true
   self:setup_softcut_params()
   self.active_start_time = util.time()
   self.playing = true
@@ -2533,11 +2528,12 @@ function Buoy:update_sound()
 
   start_loc = details["start_location"]
   end_loc = start_loc + details["duration"]
+  self.loop_start_time = start_loc
+  self.loop_end_time = end_loc
   start_pos = self:effective_rate() >= 0 and start_loc or end_loc
   softcut.loop_start(self.softcut_buffer, start_loc)
   softcut.loop_end(self.softcut_buffer, end_loc)
   softcut.position(self.softcut_buffer, start_pos)
-  softcut.phase_quant(self.softcut_buffer, end_loc - start_loc)
 end
 
 function Buoy:sound_details()
