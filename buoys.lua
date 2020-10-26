@@ -1,5 +1,5 @@
--- pilings_v29.lua
--- make crow clocking more robust
+-- pilings_v30.lua
+-- various TODOS
 
 -- tidal influencer/activator
 
@@ -18,9 +18,8 @@
 ---- macro control?
 ---- filtered noise volume (would have to write a SC engine for this)
 -- if wave depth can affect playhead position, that could be used for granular stuff
--- have the sample start playing backward when the net velocity is backward (make this optional)
 -- figure out how we're going to do slews - will they sound right for things like filtering?
--- midi CC outputs, midi sync. midi note outputs - how would that work with velocity and such?
+-- midi CC outputs, midi sync.
 ---- https://github.com/markwheeler/changes/blob/main/changes.lua
 -- use util methods where possible
 -- use controlspecs more?
@@ -33,8 +32,11 @@
 -- clocks?
 ---- https://vimeo.com/416730766
 -- negative rates
+---- have the sample start playing backward when the net velocity is backward (make this optional)
 -- organize buoy params into a two-layer nested menu?
+---- would we even need extended_only?
 -- fix floating point display stuff
+-- should pausing also pause the loops?
 
 -- NOTES FOR RELEASE
 -- concept of safeguards - e.g. how we downshift the clock multiplier if the clock is too fast
@@ -48,6 +50,7 @@
 -- 4. zenith/nadir rate multipliers?
 --    (would require new approach to determining when sound is finished)
 -- 5. use second crow input as assignable CV control
+-- 6. expanded midi support (note on triggers, velocity, poly aftertouch?)
 
 -- ACKNOWLEDGEMENTS
 -- I borrowed some file/folder loading logic from Timber Player, thanks @markeats.
@@ -65,13 +68,13 @@ TIDE_GAP = 32
 -- sinces waves move from left to right, they 
 -- will appear flipped vs these definitions
 BASE_TIDE_SHAPES = {
-  {4, 9, 15, 13, 11, 9, 6, 2},
-  {3, 6, 9, 12, 15, 0, 0, 0},
-  {5, 10, 15, 10, 5, 0, 0, 0},
-  {15, 12, 9, 6, 3, 0, 0, 0},
-  {15, 10, 5, 0, 0, 0, 0, 0},
-  {15, 0, 0, 0, 0, 0, 0, 0},
-  {15, 0, 0, 11, 0, 0, 7, 0},
+  {3, 8, 14, 12, 10, 8, 5, 1},
+  {2, 5, 8, 11, 14, 0, 0, 0},
+  {4, 9, 14, 9, 4, 0, 0, 0},
+  {14, 11, 8, 5, 2, 0, 0, 0},
+  {14, 9, 4, 0, 0, 0, 0, 0},
+  {14, 0, 0, 0, 0, 0, 0, 0},
+  {14, 0, 0, 10, 0, 0, 6, 0},
   {8, 8, 8, 8, 8, 8, 8, 8},
 }
 COLLISION_OVERALL_DAMPING = 0.2
@@ -110,12 +113,13 @@ function frequency_formatter(value)
 end
 
 function panning_formatter(value)
-  if value == 0.0 then
+  value = util.round(value * 100)
+  if value == 0 then
     return "C"
-  elseif value < 0.0 then
-    return -util.round(value * 100).."L"
+  elseif value < 0 then
+    return -value.."L"
   else
-    return util.round(value * 100).."R"
+    return value.."R"
   end
 end
 
@@ -215,6 +219,7 @@ end
 all_buoy_options = {
   -- TODO
   -- slews for things that don't have softcut builtins (auto vs controlled)
+  ---- especially filter cutoff/q
   -- depth envelope response
   ---- position?
   -- spaces between categories?
@@ -326,7 +331,6 @@ all_buoy_options = {
     option_step_value = 1,
     extended_only = true,
   },
-  -- TODO - resonance/Q controls?
   {
     name = "filter type",
     default_value = 1,
@@ -360,19 +364,43 @@ all_buoy_options = {
     option_step_value = 1,
     extended_only = true,
   },
-  -- TODO - figure out how to handle threshold of none, 
-  -- currently it always resets too
+  {
+    name = "zenith filter Q",
+    default_value = 0,
+    option_range = {0, 100},
+    option_step_value = 1,
+  },
+  {
+    name = "nadir filter Q",
+    default_value = 100,
+    option_range = {0, 100},
+    option_step_value = 1,
+  },
+  {
+    name = "Q zenith point",
+    default_value = 14,
+    option_range = {"Q nadir point", 14},
+    option_step_value = 1,
+    extended_only = true,
+  },
+  {
+    name = "Q nadir point",
+    default_value = 0,
+    option_range = {0, "Q zenith point"},
+    option_step_value = 1,
+    extended_only = true,
+  },
   {
     name = "play threshold",
     default_value = 1,
-    option_range = {0, 15},
+    option_range = {0, 14},
     option_step_value = 1,
     formatter = zero_is_none_formatter,
   },
   {
     name = "reset threshold",
     default_value = 1,
-    option_range = {0, 15},
+    option_range = {0, 14},
     option_step_value = 1,
     formatter = zero_is_none_formatter,
   },
@@ -432,7 +460,7 @@ all_buoy_options = {
   {
     name = "crow t/g threshold",
     default_value = 8,
-    option_range = {0, 15},
+    option_range = {0, 14},
     option_step_value = 1,
     formatter = zero_is_none_formatter,
     crow_only = true,
@@ -506,6 +534,7 @@ function init()
   file_select_active = false
   tide_height_multiplier = 1.0
   crow_known_to_be_connected = crow.connected()
+  crow_clock_multiplier = 1
   dispersion_ui_brightnesses = {}
   sample_details = {}
   for i = 1, 64 do
@@ -544,14 +573,6 @@ function tide_shape()
   return result
 end
 
-function crow_clock_multiplier_updated_action(multiplier)
-  if crow_clock_received_recently() then
-    -- rather than updating right away, wait until the next clock tick so that
-    -- the metro is synched to the clock signal as well as possible
-    force_crow_advance_time_update = true
-  end
-end
-
 function max_depth_updated_action(max_depth)
   -- as a side effect of recomputing depths, particles_to_tide_depths will clear excess particles
   particles_to_tide_depths()
@@ -584,18 +605,14 @@ function init_params()
   params = paramset.new()
   
   params:add{ type = "option", id = "channel_style", name = "channel style", options = { "open", "flume" } }
+  params:add{ type = "option", id = "extended_buoy_params", name = "extended buoy params", options = { "off", "on" } }
+  params:add{ type = "option", id = "smoothing", name = "visual smoothing", options = { "off", "on" }, default = 2 }
   params:add_separator()
   params:add{ type = "number", id = "angle", name = "wave angle", min = -60, max = 60, default = 0, formatter = degree_formatter }
-  params:add_separator()
   params:add{ type = "number", id = "dispersion", name = "dispersion", min = 0, max = 25, default = 10 }
   params:add_separator()
   params:add{ type = "number", id = "min_bright", name = "min brightness", min = 1, max = 3, default = 1 }
-  -- TODO - the wave editor still uses a max depth of 15, rectify those
   params:add{ type = "number", id = "max_depth", name = "max depth", min = 8, max = 14, default = 14, action = max_depth_updated_action }
-  params:add{ type = "option", id = "smoothing", name = "visual smoothing", options = { "on", "off" } }
-  params:add{ type = "option", id = "extended_buoy_params", name = "extended buoy params", options = { "off", "on" } }
-  params:add{ type = "number", id = "crow_clock_multiplier", name = "crow clock multiplier", min = 1, max = 8, default = 1, 
-              action = crow_clock_multiplier_updated_action }
 end
 
 function force_tide_update_next_tick()
@@ -623,7 +640,7 @@ function process_crow_clock(v)
     return
   end
   
-  expected_tick_time = tide_advance_time * params:get("crow_clock_multiplier")
+  expected_tick_time = tide_advance_time * crow_clock_multiplier
   expected_time = last_crow_clock_era_began + (expected_tick_time * crow_clock_era_counter)
   drift = current_time - expected_time
   
@@ -649,11 +666,11 @@ function process_crow_clock(v)
 end
 
 function set_advance_time_with_crow_clocks()
-  new_tide_advance_time = clock_delta / params:get("crow_clock_multiplier")
+  new_tide_advance_time = clock_delta / crow_clock_multiplier
   if new_tide_advance_time < MIN_TIDE_ADVANCE_TIME then
     max_allowable_clock_multiplier = math.floor(clock_delta / MIN_TIDE_ADVANCE_TIME)
     if max_allowable_clock_multiplier >= 1 then
-      params:set("crow_clock_multiplier", max_allowable_clock_multiplier)
+      crow_clock_multiplier = max_allowable_clock_multiplier
     end
     
     crow_clock_warning_countdown = 50
@@ -726,6 +743,7 @@ function background_metro_tasks()
   -- callbacks. if it has just been disconnected, we should reset our timers
   -- and counters.
   if crow_known_to_be_connected ~= crow.connected() then
+    crow_known_to_be_connected = crow.connected()
     init_crow()
   end
   
@@ -973,7 +991,10 @@ function enc(n, d)
       tide_info_overlay_countdown = 10
       
       if crow_clock_received_recently() then
-        params:delta("crow_clock_multiplier", d)
+        crow_clock_multiplier = util.clamp(crow_clock_multiplier + d, 1, 8)
+        -- rather than updating right away, wait until the next clock tick so that
+        -- the metro is synced to the clock signal as well as possible
+        force_crow_advance_time_update = true
       else
         tide_advance_time = util.round(math.max(tide_advance_time + d * 0.001, MIN_TIDE_ADVANCE_TIME), 0.001)
         advance_time_dirty = true
@@ -1035,7 +1056,7 @@ function smoothly_make_tides()
       update_buoy_depths()
     end
     
-    if params:get("smoothing") == 1 or smoothing_counter == 0 then
+    if params:get("smoothing") == 2 or smoothing_counter == 0 then
       redraw_lights()
     end
   end
@@ -1057,9 +1078,11 @@ function make_tides()
   roll_forward()
   update_angle_gaps()
   
-  -- TODONOW - if tide gap has dropped recently such that tide_interval_counter is more than the usual amount
-  -- over, we should make a new tide immediately
-  tide_interval_counter = (tide_interval_counter % (tide_gap)) + 1
+  if tide_interval_counter >= tide_gap then
+    tide_interval_counter = 1
+  else
+    tide_interval_counter = tide_interval_counter + 1
+  end
   
   new_tide(tide_interval_counter)
 
@@ -1400,7 +1423,7 @@ function redraw_tide_info_overlay()
   screen.move(0, 30)
   screen.text(using_crow_clock and "crow clock multiplier" or "tide advance time")
   screen.move(128, 30)
-  screen.text_right(using_crow_clock and params:get("crow_clock_multiplier") or tide_advance_time)
+  screen.text_right(using_crow_clock and crow_clock_multiplier or tide_advance_time)
   
   screen.move(0, 40)
   screen.text("tide gap")
@@ -1552,6 +1575,7 @@ function redraw_grid_lights_tide_shape_editor()
     for y = 1, g.rows do
       brightness = y == current_index and 15 or 0
       g:led(1, y, brightness)
+      g:led(16, y, 0)
     end
   else
     first_in_sequence = util.round(tide_shape_index)
@@ -1571,9 +1595,9 @@ function redraw_grid_lights_tide_shape_editor()
     end
   end
 
-  for x = 2, g.cols do
+  for x = 2, g.cols - 1 do
     for y = 1, g.rows do
-      brightness = (x + current_shape[y]) >= 17 and 8 or 0
+      brightness = (x + current_shape[y]) >= 16 and 8 or 0
       g:led(x, y, brightness)
     end
   end
@@ -1696,7 +1720,9 @@ function Buoy:update_depth(new_depth)
   self:update_filtering()
   self:update_crow()
   
-  -- TODO - what if the play threshold is at "none", then how should we proceed?
+  -- TODONOW - this is resetting even when it's already playing -- we should
+  ---- leave that to the reset threshold
+  -- TODONOW - what if the play threshold is at "none", then how should we proceed?
   if self:newly_exceeds_play_threshold() then
     self:grab_softcut_buffer()
     -- if there are a lot of active uninterruptible buffers
@@ -1851,6 +1877,14 @@ function Buoy:update_option(name, value)
     self:update_filtering()
   elseif name == "cutoff nadir point" then
     self:update_filtering()
+  elseif name == "zenith filter Q" then
+    self:update_filter_q()
+  elseif name == "nadir filter Q" then
+    self:update_filter_q()
+  elseif name == "Q zenith point" then
+    self:update_filter_q()
+  elseif name == "Q nadir point" then
+    self:update_filter_q()
   end
 end
 
@@ -1977,6 +2011,24 @@ function Buoy:update_filtering()
   softcut.post_filter_fc(self.softcut_buffer, frequency_exp_convert(new_cutoff))
 end
 
+function Buoy:update_filter_q()
+  if not self:has_softcut_buffer() then
+    return
+  end
+  
+  nfq = self.options["nadir filter Q"]
+  zfq = self.options["zenith filter Q"]
+  new_q = nfq + ((zfq - nfq) * self:tide_ratio("Q"))
+  
+  if new_q == 0 then
+    new_rq = 4.0
+  else
+    new_rq = 1 / new_q
+  end
+  
+  softcut.post_filter_rq(self.softcut_buffer, new_rq)
+end
+
 function Buoy:update_volume()
   if not self:has_softcut_buffer() then
     return
@@ -1994,8 +2046,6 @@ function Buoy:tide_ratio(param)
   range_size = zp - np
   effective_depth = util.clamp(self.depth, np, zp) - np
   return effective_depth / range_size
-
-  -- return self.depth / params:get("max_depth")
 end
 
 function Buoy:update_looping()
@@ -2083,10 +2133,7 @@ g.key = function(x, y, z)
           num_tide_shapes_in_sequence = 1
         end
       else
-        shape_being_edited = tide_shapes[edited_shape_index()]
-        old_tide_depth = shape_being_edited[y]
-        new_tide_depth = 17 - x
-        shape_being_edited[y] = old_tide_depth == new_tide_depth and 0 or new_tide_depth
+        tide_shapes[edited_shape_index()][y] = 16 - x
       end
     end
   else
@@ -2126,8 +2173,6 @@ end
 
 -- arc
 
--- TODO - everything here should also be a param so that you could do
--- midi mapping instead of using arc
 function a.delta(n, d)
   if n == 1 then
     tide_height_multiplier = util.clamp(tide_height_multiplier + (d * 0.001), 0.0, 1.0)
