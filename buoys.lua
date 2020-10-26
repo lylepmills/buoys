@@ -1,5 +1,5 @@
--- pilings_v13.lua
--- wave shape editing view
+-- pilings_v14.lua
+-- arc params + animations
 
 -- TODO LIST
 -- more tide shapes
@@ -38,6 +38,7 @@ RUN = true
 
 DISPERSION_MULTIPLE = 0.001
 
+-- TIDE_GAP = 0
 TIDE_GAP = 25
 TIDE_HEIGHT = 5
 -- sinces waves move from left to right, they 
@@ -58,7 +59,7 @@ COLLISION_DIRECTIONAL_DAMPING = 0.5
 VELOCITY_AVERAGING_FACTOR = 0.6
 DISPERSION_VELOCITY_FACTOR = 0.1
 LONG_PRESS_TIME = 1.0
-GRID_KEY_PRESS_METRO_TIME = 0.1
+BACKGROUND_METRO_TIME = 0.1
 POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
 
 -- TODO - could these be tied to the rate at which waves are moving?
@@ -110,7 +111,7 @@ BUOY_OPTIONS = {
   },
 }
 
-
+a = arc.connect()
 g = grid.connect()
 
 function init()
@@ -137,14 +138,19 @@ function init()
   held_grid_keys_counter = 0
   key_states = {0, 0, 0}
   was_editing_tides = false
+  tide_height_multiplier = 1.0
+  dispersion_ui_brightnesses = {}
+  for i = 1, 64 do
+    dispersion_ui_brightnesses[i] = 0
+  end
 
   init_softcut()
   
   if RUN then
     tide_maker = metro.init(smoothly_make_tides, params:get("advance_time") / params:get("smoothing"))
     tide_maker:start()
-    held_grid_keys_tracker = metro.init(update_held_grid_keys, GRID_KEY_PRESS_METRO_TIME)
-    held_grid_keys_tracker:start()
+    background_metro = metro.init(background_metro_tasks, BACKGROUND_METRO_TIME)
+    background_metro:start()
   end
 end
 
@@ -176,7 +182,7 @@ function init_params()
   params:add_separator()
   params:add{ type = "number", id = "min_bright", name = "min brightness", min = 1, max = 3, default = 1 }
   params:add{ type = "number", id = "max_bright", name = "max brightness", min = 10, max = 15, default = 15 }
-  -- TODO - smoothing should not be a param, and it should not affect the perceived scroll speed
+  -- TODO - smoothing should just be on/off, and it should not affect the perceived scroll speed
   params:add{ type = "number", id = "smoothing", name = "smoothing", min = 3, max = 6, default = 4 }
 end
 
@@ -223,6 +229,11 @@ function init_softcut()
   end
 end
 
+function background_metro_tasks()
+  update_held_grid_keys()
+  update_dispersion_ui()
+end
+
 function update_held_grid_keys()
   held_grid_keys_counter = held_grid_keys_counter + 1
   keys_held = grid_keys_held()
@@ -232,7 +243,7 @@ function update_held_grid_keys()
     x, y = key_held[1], key_held[2]
     -- TODO - should only increment counters if we're not already editing buoys
     held_grid_keys[y][x] = held_grid_keys[y][x] + 1
-    if held_grid_keys[y][x] > (LONG_PRESS_TIME / GRID_KEY_PRESS_METRO_TIME) then
+    if held_grid_keys[y][x] > (LONG_PRESS_TIME / BACKGROUND_METRO_TIME) then
       newly_editing_buoys = true
       longest_held_key = {x, y}
       held_grid_keys = fresh_grid(0)
@@ -251,6 +262,16 @@ function update_held_grid_keys()
     buoy_editing_prototype = buoys[longest_held_key[2]][longest_held_key[1]]
 
     redraw_screen()
+  end
+end
+
+function update_dispersion_ui()
+  for i = 1, 64 do
+    if flip_coin(dispersion_factor()) then
+      dispersion_ui_brightnesses[i] = 15
+    else
+      dispersion_ui_brightnesses[i] = util.clamp(dispersion_ui_brightnesses[i] - 1, 0, 15)
+    end
   end
 end
 
@@ -385,7 +406,8 @@ end
 function new_tide(position)
   for y = 1, g.rows do
     num_new_particles = tide_shape()[position - current_angle_gaps[y]] or 0
-    
+    num_new_particles = math.floor(num_new_particles * tide_height_multiplier + 0.5)
+
     for _ = 1, num_new_particles do
       if not is_piling(1, y) then
         particle = {}
@@ -682,13 +704,52 @@ end
 function redraw_lights()
   if editing_tide_shapes() then
     was_editing_tides = true
-    redraw_lights_tide_shape_editor()
+    redraw_grid_lights_tide_shape_editor()
   else
-    redraw_lights_main_view()
+    redraw_grid_lights_main_view()
   end
+  
+  redraw_arc_lights()
 end
 
-function redraw_lights_tide_shape_editor()
+function redraw_arc_lights()
+  a:all(0)
+  
+  -- tide height multiplier
+  for i = 1, 32 do
+    if (tide_height_multiplier * 32) >= i then
+      a:led(1, i + 32, 15)
+      a:led(1, 33 - i, 15)
+    end
+  end
+  
+  -- wave shapes + interpolation
+  shape = tide_shape()
+  for i = 1, 8 do
+    for j = 1, 4 do
+      a:led(2, 12 + j + (i * 4), shape[i])
+      a:led(2, 16 + j - (i * 4), shape[i])
+    end
+  end
+  
+  -- wave angle
+  led_offset = math.floor((params:get("angle") / 90) * 16 + 0.5) + 1
+  a:led(3, led_offset - 1, 5)
+  a:led(3, led_offset, 15)
+  a:led(3, led_offset + 1, 5)
+
+  a:led(3, led_offset + 31, 5)
+  a:led(3, led_offset + 32, 15)
+  a:led(3, led_offset + 33, 5)
+
+  -- dispersion
+  for i = 1, 64 do
+    a:led(4, i, dispersion_ui_brightnesses[i])
+  end
+  a:refresh()
+end
+
+function redraw_grid_lights_tide_shape_editor()
   current_index = math.floor(tide_shape_index)
   current_shape = tide_shapes[current_index]
   
@@ -707,7 +768,7 @@ function redraw_lights_tide_shape_editor()
   g:refresh()
 end
 
-function redraw_lights_main_view()
+function redraw_grid_lights_main_view()
   grid_lighting = grid_transition(smoothing_counter / params:get("smoothing"))
   
   for x = 1, g.cols do
@@ -916,4 +977,28 @@ g.key = function(x, y, z)
   
   redraw_lights()
   redraw_screen()
+end
+
+-- arc
+
+-- TODO - everything here should also be a param so that you could do
+-- midi mapping instead of using arc
+function a.delta(n, d)
+  if n == 1 then
+    tide_height_multiplier = util.clamp(tide_height_multiplier + (d * 0.001), 0.0, 1.0)
+  elseif n == 2 then
+    tide_shape_index = tide_shape_index + (d * 0.01)
+    if tide_shape_index >= 9 then
+      tide_shape_index = tide_shape_index - 8
+    end
+    if tide_shape_index < 1 then
+      tide_shape_index = tide_shape_index + 8
+    end
+  elseif n == 3 then
+    params:delta("angle", d * 0.1)
+  elseif n == 4 then
+    params:delta("dispersion", d * 0.01)
+  end
+  
+  redraw_arc_lights()
 end
