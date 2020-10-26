@@ -1,5 +1,5 @@
--- pilings_v24.lua
--- wave sequencing part 1
+-- pilings_v25.lua
+-- wave sequencing part 2
 
 -- TODO LIST
 -- use local variables
@@ -28,6 +28,7 @@
 -- meta mode
 ---- global state saving/loading
 -- check display logic for buoys in terms of both grid lights and norns display, seems to be some inconsistencies
+-- make a util method for all the places where we use the % operator in a weird way to constrain to a [1, x] range
 
 -- IDEAS FOR LATER VERSIONS
 -- 1. maybe zenith/nadir volume ranges should extend beyond [0.0, 1.0]
@@ -56,7 +57,7 @@ BASE_TIDE_SHAPES = {
   {15, 12, 9, 6, 3, 0, 0, 0},
   {15, 10, 5, 0, 0, 0, 0, 0},
   {15, 0, 0, 0, 0, 0, 0, 0},
-  {15, 0, 0, 15, 0, 0, 15, 0},
+  {15, 0, 0, 11, 0, 0, 7, 0},
   {8, 8, 8, 8, 8, 8, 8, 8},
 }
 COLLISION_OVERALL_DAMPING = 0.2
@@ -130,6 +131,7 @@ function file_select_finished_callback(full_file_path)
 end
 
 -- TODO - is there any way to just terminate at the folder view in fileselect
+-- https://github.com/monome/norns/blob/main/lua/lib/fileselect.lua
 function load_sound_folder(full_file_path)
   softcut.buffer_clear_channel(1)
   sample_details = {}
@@ -290,8 +292,7 @@ function init()
   buoy_editing_option_scroll_index = 1
   -- tide_shape_index can be fractional, indicating interpolation between shapes
   tide_shape_index = 1
-  -- TODONOW - this should default to 1
-  num_tide_shapes_in_sequence = 2
+  num_tide_shapes_in_sequence = 1
   tide_shapes = BASE_TIDE_SHAPES
   tide_gap = TIDE_GAP
   tide_advance_time = ADVANCE_TIME
@@ -422,6 +423,11 @@ function update_held_grid_keys()
     held_grid_keys = fresh_grid(0)
     meta_mode = true
     redraw()
+    return
+  end
+  
+  -- if we're editing tide shapes we don't want to trigger buoy editing
+  if editing_tide_shapes() then
     return
   end
   
@@ -1097,13 +1103,49 @@ function edited_shape_index()
   return result == 9 and 1 or result
 end
 
+function phase_in_wrapped_range(target_index, low_index, high_index, wrap_point)
+  wrap_point = wrap_point or 8
+  
+  if high_index > low_index then
+    if (target_index >= low_index) and (target_index <= high_index) then
+      range_size = high_index - low_index + 1
+      return (target_index - low_index) / range_size
+    end
+  else
+    if (target_index >= low_index) or (target_index <= high_index) then
+      range_size = wrap_point - (low_index - high_index) + 1
+      return ((target_index - low_index) % wrap_point) / range_size
+    end
+  end
+  
+  return nil
+end
+
 function redraw_grid_lights_tide_shape_editor()
   current_index = edited_shape_index()
   current_shape = tide_shapes[current_index]
-  
-  for y = 1, g.rows do
-    brightness = y == current_index and 15 or 0
-    g:led(1, y, brightness)
+
+  if num_tide_shapes_in_sequence == 1 then
+    for y = 1, g.rows do
+      brightness = y == current_index and 15 or 0
+      g:led(1, y, brightness)
+    end
+  else
+    first_in_sequence = util.round(tide_shape_index)
+    last_in_sequence = ((first_in_sequence + num_tide_shapes_in_sequence - 2) % 8) + 1
+    reference_time = util.time() % 2
+    
+    for y = 1, g.rows do
+      brightness_phase = phase_in_wrapped_range(y, first_in_sequence, last_in_sequence)
+      if brightness_phase then
+        brightness = util.round(15 * (1 - reference_time + brightness_phase))
+        brightness = (brightness >= 0 and brightness <= 15) and brightness or 0
+      else  
+        brightness = 0
+      end
+      
+      g:led(1, y, brightness)
+    end
   end
 
   for x = 2, g.cols do
@@ -1422,11 +1464,27 @@ g.key = function(x, y, z)
     return
   end
   
-  -- TODONOW - wave sequencing logic
+  held_grid_keys[y][x] = z
+  
   if editing_tide_shapes() then
     if z == 1 then
       if x == 1 then
-        tide_shape_index = y
+        new_wave_sequence = false
+        for y_held = 1, g.rows do
+          if y ~= y_held then
+            if held_grid_keys[y_held][1] == 1 then
+              new_wave_sequence = true
+              tide_shape_index = y_held
+              num_tide_shapes_in_sequence = ((y - y_held) % 8) + 1
+              break
+            end
+          end
+        end
+
+        if not new_wave_sequence then
+          tide_shape_index = y
+          num_tide_shapes_in_sequence = 1
+        end
       else
         shape_being_edited = tide_shapes[edited_shape_index()]
         old_tide_depth = shape_being_edited[y]
@@ -1462,7 +1520,7 @@ g.key = function(x, y, z)
       end
     end
     
-    held_grid_keys[y][x] = z
+    -- held_grid_keys[y][x] = z
   end
   
   redraw_lights()
