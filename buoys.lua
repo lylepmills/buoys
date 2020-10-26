@@ -1,5 +1,5 @@
--- pilings_v20.lua
--- basic meta mode menus
+-- pilings_v21.lua
+-- sample folder loading
 
 -- TODO LIST
 -- use local variables
@@ -31,6 +31,14 @@
 -- meta mode
 ---- sample loading
 ---- global state saving/loading?
+---- 3 voice stereo mode? variable?
+
+-- ACKNOWLEDGEMENTS
+-- I borrowed some file/folder loading logic from Timber Player, thanks @markeats.
+
+fileselect = require "fileselect"
+tabutil = require "tabutil"
+-- TODO - explicit require necessary?
 
 RUN = true
 
@@ -54,13 +62,13 @@ COLLISION_OVERALL_DAMPING = 0.2
 COLLISION_DIRECTIONAL_DAMPING = 0.5
 VELOCITY_AVERAGING_FACTOR = 0.6
 DISPERSION_VELOCITY_FACTOR = 0.1
+SAMPLE_SPACING_BUFFER_TIME = 0.5
 LONG_PRESS_TIME = 1.0
 BACKGROUND_METRO_TIME = 0.1
 POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
 SMOOTHING_FACTOR = 4
 META_MODE_KEYS = { { x=1, y=1 }, { x=1, y=8 }, { x=16, y=1 }, { x=16, y=8 } }
--- TODO - support all these options
-META_MODE_OPTIONS = { "load samples", "save state", "load state", "exit" }
+META_MODE_OPTIONS = { "choose sample folder", "save state", "load state", "exit" }
 
 -- TODO - could these be tied to the rate at which waves are moving? ("auto" option)
 RATE_SLEW = 0.1
@@ -71,7 +79,6 @@ AUDIO_FILE = _path.dust.."audio/tehn/mancini2.wav"
 -- AUDIO_FILE = _path.dust.."audio/tehn/drumlite.wav"
 -- AUDIO_FILE = _path.dust.."audio/hermit-leaves.wav"
 AUDIO_DIRECTORY = _path.dust.."audio/tehn"
-NUM_SOFTCUT_BUFFERS = 6
 
 function offset_formatter(value)
   if value > 0 then
@@ -89,57 +96,65 @@ function zero_is_none_formatter(value)
   return tostring(value)
 end
 
--- TODONOW - finish
-function load_samples(directory)
-  files = util.scandir(directory)
+function file_select_finished_callback(full_file_path)
+  file_select_active = false
+  if file ~= "cancel" then
+    load_sample_folder(full_file_path)
+  end
+  
+  exit_meta_mode()
 end
 
-      -- Timber.FileSelect.enter(_path.audio, function(file)
-      --   file_select_active = false
-      --   screen_dirty = true
-      --   if file ~= "cancel" then
-      --     load_folder(file, add)
-      --   end
-      -- end)
-      
--- local function load_folder(file, add)
+-- TODO - is there any way to just terminate at the folder view in fileselect
+-- TODONOW - test this is all working
+function load_sample_folder(full_file_path)
+  softcut.buffer_clear_channel(1)
+  sample_details = {}
+  next_sample_start_location = 1.0
   
---   local sample_id = 0
---   if add then
---     for i = NUM_SAMPLES - 1, 0, -1 do
---       if Timber.samples_meta[i].num_frames > 0 then
---         sample_id = i + 1
---         break
---       end
---     end
---   end
+  folder, _ = split_file_path(full_file_path)
   
---   Timber.clear_samples(sample_id, NUM_SAMPLES - 1)
-  
---   local split_at = string.match(file, "^.*()/")
---   local folder = string.sub(file, 1, split_at)
---   file = string.sub(file, split_at + 1)
-  
---   local found = false
---   for k, v in ipairs(Timber.FileSelect.list) do
---     if v == file then found = true end
---     if found then
---       if sample_id > 255 then
---         print("Max files loaded")
---         break
---       end
---       -- Check file type
---       local lower_v = v:lower()
---       if string.find(lower_v, ".wav") or string.find(lower_v, ".aif") or string.find(lower_v, ".aiff") or string.find(lower_v, ".ogg") then
---         Timber.load_sample(sample_id, folder .. v)
---         sample_id = sample_id + 1
---       else
---         print("Skipped", v)
---       end
---     end
---   end
--- end
+  for _, filename in ipairs(fileselect.list) do
+    filename_lower = filename:lower()
+    
+    if string.find(filename_lower, ".wav") or string.find(filename_lower, ".aif") or string.find(filename_lower, ".aiff") then
+      load_sample(folder .. filename)
+    end
+  end
+end
 
+function load_sample(full_file_path)
+  local _, samples, sample_rate = audio.file_info(full_file_path)
+  local sample_duration = samples / sample_rate
+  -- TODO - does sample rate have to be 48000?
+  -- https://llllllll.co/t/norns-2-0-softcut/20550/176?u=lylem
+  if sample_rate ~= 48000 then
+    return
+  end
+  
+  if (next_sample_start_location + sample_duration) > softcut.BUFFER_SIZE then
+    return
+  end
+  
+  softcut.buffer_read_mono(full_file_path, 0, next_sample_start_location, -1, 1, 1)
+  _, filename = split_file_path(full_file_path)
+  details = {
+    name = filename,  -- TODO - process filename to remove suffixes
+    duration = sample_duration,
+    start_location = next_sample_start_location,
+  }
+  table.insert(sample_details, details)
+  
+  next_sample_start_location = util.round_up(
+    next_sample_start_location + sample_duration + SAMPLE_SPACING_BUFFER_TIME)
+end
+
+function split_file_path(full_file_path)
+  local split_at = string.match(full_file_path, "^.*()/")
+  local folder = string.sub(full_file_path, 1, split_at)
+  local file = string.sub(full_file_path, split_at + 1)
+  return folder, file
+end
 
 BUOY_OPTIONS = {
   -- TODO
@@ -239,8 +254,10 @@ function init()
   was_editing_tides = false
   meta_mode = false
   meta_mode_option_index = 1
+  file_select_active = false
   tide_height_multiplier = 1.0
   dispersion_ui_brightnesses = {}
+  sample_details = {}
   for i = 1, 64 do
     dispersion_ui_brightnesses[i] = 0
   end
@@ -290,7 +307,7 @@ function init_softcut()
   
   buffer_buoy_map = {}
 
-  for i = 1, NUM_SOFTCUT_BUFFERS do
+  for i = 1, softcut.VOICE_COUNT do
     softcut.enable(i, 1)
     softcut.buffer(i, 1)
     softcut.level(i, 1.0)
@@ -458,10 +475,15 @@ function key(n, z)
     end
     
     meta_mode_option = META_MODE_OPTIONS[meta_mode_option_index]
-    -- TODO - other options
-    if meta_mode_option == "exit" then
-      meta_mode = false
-      redraw()
+
+    if meta_mode_option == "choose sample folder" then
+      file_select_active = true
+      fileselect.enter(_path.audio, file_select_finished_callback)
+    elseif meta_mode_option == "save state" then
+      -- TODO - save/load state logic
+    elseif meta_mode_option == "load state" then
+    elseif meta_mode_option == "exit" then
+      exit_meta_mode()
     end
   else
     if z == 0 and not was_editing_tides then
@@ -478,6 +500,12 @@ function key(n, z)
     
     redraw_lights()
   end
+end
+
+function exit_meta_mode()
+  meta_mode = false
+  meta_mode_option_index = 1
+  redraw()
 end
 
 function displaying_tide_info_overlay()
@@ -584,7 +612,7 @@ function new_tide(position)
     -- TODO - figure out wave sequencing here
     tide_index = ((position - current_angle_gaps[y]) % tide_gap) + 1
     num_new_particles = tide_shape()[tide_index] or 0
-    num_new_particles = math.floor(num_new_particles * tide_height_multiplier + 0.5)
+    num_new_particles = util.round(num_new_particles * tide_height_multiplier)
 
     for _ = 1, num_new_particles do
       if not is_piling(1, y) then
@@ -602,11 +630,11 @@ end
 
 function angle_gaps()
   distance = math.tan(degrees_to_radians(params:get("angle")))
-  offset = math.abs(math.min(0, round((g.rows - 1) * distance)))
+  offset = math.abs(math.min(0, util.round((g.rows - 1) * distance)))
   
   result = {}
   for i = 0, g.rows - 1 do
-    table.insert(result, round(i * distance) + offset)
+    table.insert(result, util.round(i * distance) + offset)
   end
   
   return result
@@ -816,7 +844,7 @@ function grid_transition(proportion)
   for x = 1, g.cols do
     for y = 1, g.rows do
       lighting_difference = new_grid_lighting[y][x] - old_grid_lighting[y][x]
-      result[y][x] = round(old_grid_lighting[y][x] + (lighting_difference * proportion))
+      result[y][x] = util.round(old_grid_lighting[y][x] + (lighting_difference * proportion))
     end
   end
   
@@ -824,6 +852,11 @@ function grid_transition(proportion)
 end
 
 function redraw()
+  if file_select_active then
+    fileselect.redraw()
+    return
+  end
+  
   redraw_screen()
 end
 
@@ -849,7 +882,7 @@ end
 
 -- TODO - maybe say K3 to enter somewhere?
 function redraw_meta_mode_screen()
-  -- META_MODE_OPTIONS = { "load samples", "save state", "load state", "exit" }
+  -- META_MODE_OPTIONS = { "choose sample folder", "save state", "load state", "exit" }
   for option_index, option in pairs(META_MODE_OPTIONS) do
     if option_index == meta_mode_option_index then
       screen.level(15)
@@ -857,7 +890,7 @@ function redraw_meta_mode_screen()
       screen.level(5)
     end
     
-    screen.move(20, 10 + 10 * option_index)
+    screen.move(15, 10 + 10 * option_index)
     screen.text(option)
   end
 end
@@ -971,7 +1004,7 @@ function redraw_arc_lights()
   end
   
   -- wave angle
-  led_offset = math.floor((params:get("angle") / 90) * 16 + 0.5) + 1
+  led_offset = util.round((params:get("angle") / 90) * 16) + 1
   a:led(3, led_offset - 1, 5)
   a:led(3, led_offset, 15)
   a:led(3, led_offset + 1, 5)
@@ -988,7 +1021,7 @@ function redraw_arc_lights()
 end
 
 function edited_shape_index()
-  result = math.floor(tide_shape_index + 0.5)
+  result = util.round(tide_shape_index)
   return result == 9 and 1 or result
 end
 
@@ -1055,10 +1088,6 @@ function list_shuffle(tbl)
     tbl[i], tbl[rand] = tbl[rand], tbl[i]
   end
   return tbl
-end
-
-function round(num)
-  return math.floor(num + 0.5)
 end
 
 function dispersion_factor()
@@ -1181,7 +1210,7 @@ function next_softcut_buffer()
   oldest_active_start_time = math.huge
   best_candidate = nil
   
-  for i = 1, NUM_SOFTCUT_BUFFERS do
+  for i = 1, softcut.VOICE_COUNT do
     buoy = buffer_buoy_map[i]
     if not buoy then
       return i
