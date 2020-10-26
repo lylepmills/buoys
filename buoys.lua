@@ -1,5 +1,5 @@
--- pilings
--- basic buoy UI interactions
+-- pilings_v9.lua
+-- added v0 audio/softcut functionality
 
 RUN = true
 SHOW_GRID = true
@@ -9,8 +9,8 @@ DISPERSION_MULTIPLE = 0.001
 TIDE_GAP = 25
 TIDE_HEIGHT = 5
 -- shape is defined right to left
--- TIDE_SHAPE = {1, 3, 6, 10, 9, 8, 6, 4, 1}
-TIDE_SHAPE = {6, 3, 2}
+TIDE_SHAPE = {1, 3, 6, 10, 9, 8, 6, 4, 1}
+-- TIDE_SHAPE = {6, 3, 2}
 COLLISION_OVERALL_DAMPING = 0.2
 COLLISION_DIRECTIONAL_DAMPING = 0.5
 VELOCITY_AVERAGING_FACTOR = 0.6
@@ -18,25 +18,51 @@ DISPERSION_VELOCITY_FACTOR = 0.1
 LONG_PRESS_TIME = 1.0
 GRID_KEY_PRESS_METRO_TIME = 0.1
 POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
+TEST_RATES = {0.5, 1.0, 2.0, 0.5, 1.0, 2.0}
+
+-- TODO - could these be tied to the rate at which waves are moving?
+RATE_SLEW = 0.1
+LEVEL_SLEW = 0.2
+-- AUDIO_FILE = _path.dust.."audio/tehn/mancini1.wav"
+-- AUDIO_FILE = _path.dust.."audio/tehn/mancini2.wav"
+AUDIO_FILE = _path.dust.."audio/tehn/drumlite.wav"
+-- AUDIO_FILE = _path.dust.."audio/hermit-leaves.wav"
+NUM_SOFTCUT_BUFFERS = 6
+
+BUOY_OPTIONS = {
+  -- sample
+  -- looping?
+  -- depth envelope response
+  ---- min threshold
+  ---- min/max values
+  ---- volume
+  ---- other options?
+  ["octave offset"] = {
+    default_value = 0,
+    option_range = {-2, 2},
+    option_step_value = 1,
+    formatter = offset_formatter,
+  },
+  ["semitone offset"] = {
+    default_value = 0,
+    option_range = {-7, 7},
+    option_step_value = 1,
+    formatter = offset_formatter,
+  },
+  ["cent offset"] = {
+    default_value = 0,
+    option_range = {-50, 50},
+    option_step_value = 1,
+    formatter = offset_formatter,
+  },
+}
+
 
 g = grid.connect()
 
 function init()
-  params = paramset.new()
+  init_params()
   
-  params:add{ type = "option", id = "channel_style", name = "channel style", options = { "open", "flume" } }
-  params:add_separator()
-  params:add{ type = "number", id = "angle", name = "wave angle", min = -60, max = 60, default = 0, formatter = degree_formatter }
-  -- TODO = rename to wave speed
-  cs_advance_time = controlspec.new(0.05, 1.0, "lin", 0, 0.2, "seconds")
-  params:add{ type = "control", id = "advance_time", name = "advance time", controlspec = cs_advance_time, action = update_advance_time }
-  params:add_separator()
-  params:add{ type = "number", id = "dispersion", name = "dispersion", min = 0, max = 25, default = 10 }
-  params:add_separator()
-  params:add{ type = "number", id = "min_bright", name = "min brightness", min = 1, max = 3, default = 1 }
-  params:add{ type = "number", id = "max_bright", name = "max brightness", min = 10, max = 15, default = 15 }
-  params:add{ type = "number", id = "smoothing", name = "smoothing", min = 3, max = 6, default = 4 }
-
   pilings = fresh_grid(0)
   particles = {}
   held_grid_keys = fresh_grid(0)
@@ -51,12 +77,76 @@ function init()
   current_angle_gaps = angle_gaps()
   tide_interval_counter = 0
   smoothing_counter = 0
+  next_softcut_buffer = 1
+  
+  init_softcut()
   
   if RUN then
     tide_maker = metro.init(smoothly_make_tides, params:get("advance_time") / params:get("smoothing"))
     tide_maker:start()
     held_grid_keys_tracker = metro.init(update_held_grid_keys, GRID_KEY_PRESS_METRO_TIME)
     held_grid_keys_tracker:start()
+  end
+end
+
+function init_params()
+  params = paramset.new()
+  
+  params:add{ type = "option", id = "channel_style", name = "channel style", options = { "open", "flume" } }
+  params:add_separator()
+  params:add{ type = "number", id = "angle", name = "wave angle", min = -60, max = 60, default = 0, formatter = degree_formatter }
+  -- TODO = rename to wave speed
+  cs_advance_time = controlspec.new(0.05, 1.0, "lin", 0, 0.2, "seconds")
+  params:add{ type = "control", id = "advance_time", name = "advance time", controlspec = cs_advance_time, action = update_advance_time }
+  params:add_separator()
+  params:add{ type = "number", id = "dispersion", name = "dispersion", min = 0, max = 25, default = 10 }
+  params:add_separator()
+  params:add{ type = "number", id = "min_bright", name = "min brightness", min = 1, max = 3, default = 1 }
+  params:add{ type = "number", id = "max_bright", name = "max brightness", min = 10, max = 15, default = 15 }
+  params:add{ type = "number", id = "smoothing", name = "smoothing", min = 3, max = 6, default = 4 }
+end
+
+function init_softcut()
+  softcut.buffer_clear()
+  -- softcut.buffer_read_mono(AUDIO_FILE, 0, 0, -1, 0, 0)
+  
+  -- buffer_read_mono (file, start_src, start_dst, dur, ch_src, ch_dst)
+  softcut.buffer_read_mono(AUDIO_FILE, 0, 1, -1, 1, 1)
+  -- -- enable voice 1
+  -- softcut.enable(1,1)
+  -- -- set voice 1 to buffer 1
+  -- softcut.buffer(1,1)
+  -- -- set voice 1 level to 1.0
+  -- softcut.level(1,1.0)
+  -- -- voice 1 enable loop
+  -- softcut.loop(1,0)
+  -- -- set voice 1 loop start to 1
+  -- softcut.loop_start(1,1)
+  -- -- set voice 1 loop end to 2
+  -- softcut.loop_end(1,7)
+  -- -- set voice 1 position to 1
+  -- softcut.position(1,1)
+  -- -- set voice 1 rate to 1.0
+  -- softcut.rate(1,1.0)
+  -- -- enable voice 1 play
+  -- softcut.play(1,1)
+  
+  buffer_buoy_map = {}
+
+  for i = 1, NUM_SOFTCUT_BUFFERS do
+    softcut.enable(i, 1)
+    softcut.buffer(i, 1)
+    softcut.level(i, 1.0)
+    softcut.loop(i, 0)
+    softcut.loop_start(i, 1.0)
+    softcut.loop_end(i, 7.0)
+    softcut.position(i, 1.0)
+    -- softcut.rate(i, 1.0)
+    softcut.rate(i, TEST_RATES[i])
+    buffer_buoy_map[i] = nil
+
+    softcut.rate_slew_time(i, RATE_SLEW)
+    softcut.level_slew_time(i, LEVEL_SLEW)
   end
 end
 
@@ -126,10 +216,20 @@ function key(n, z)
   if n == 2 then
     displaying_buoys = z == 1
   end
+  
+  redraw_lights()
 end
 
 function degree_formatter(tbl)
   return tbl.value .. " degrees"
+end
+
+function offset_formatter(value)
+  if value > 0 then
+    return "+"..value
+  end
+  
+  return tostring(value)
 end
 
 function smoothly_make_tides()
@@ -137,10 +237,24 @@ function smoothly_make_tides()
     smoothing_counter = (smoothing_counter + 1) % params:get("smoothing")
     if smoothing_counter == 0 then
       make_tides()
+      update_buoy_depths()
     end
     
-    -- redraw_screen()
     redraw_lights()
+  end
+end
+
+-- TODO - a bit ugly to use the min_bright value here
+-- as the baseline - could probably refactor
+function update_buoy_depths()
+  for x = 1, g.cols do
+    for y = 1, g.rows do
+      if buoys[y][x] then
+        depth = new_grid_lighting[y][x] - params:get("min_bright")
+        Buoy.update_depth(buoys[y][x], depth)
+        -- buoys[y][x].update_depth(depth)
+      end
+    end
   end
 end
 
@@ -403,11 +517,42 @@ function redraw_screen()
   screen.update()
 end
 
+-- TODO - a buoy line drawing would be cool here
 function redraw_edit_buoy_screen()
+  height = 0
   screen.level(15)
-  screen.font_size(13)
+  screen.font_size(10)
+  
   screen.move(64, 28)
   screen.text_center("EDITING BUOYS")
+  
+  -- TODO - for some reason, not seeing anything on the screen from this
+  for option_name, option_config in ipairs(BUOY_OPTIONS) do
+    print("processing options")
+    -- self.options[option_name] = option_config.default_value
+    screen.move(64, height)
+    -- screen.text(option_name)
+    screen.text_center("EDITING BUOYS")
+    
+    height = height + 10
+  end
+  
+  
+  
+  -- BUOY_OPTIONS = {
+  -- -- sample
+  -- -- looping?
+  -- -- depth envelope response
+  -- ---- min threshold
+  -- ---- min/max values
+  -- ---- volume
+  -- ---- other options?
+  -- ["octave offset"] = {
+  --   default_value = 0,
+  --   option_range = {-2, 2},
+  --   option_step_value = 1,
+  --   formatter = offset_formatter,
+  -- },
 end
 
 function redraw_regular_screen()
@@ -463,6 +608,10 @@ function redraw_lights()
   end
 end
 
+function max_depth()
+  return params:get("max_bright") - params:get("min_bright")
+end
+
 function fresh_grid(b)
   return {
     {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
@@ -515,19 +664,61 @@ end
 Buoy = {
   active = false,
   being_edited = false,
-  clip = nil,
+  previous_depth = 0,
+  depth = 0,
+  softcut_buffer = -1,
+  options = {},
 }
 
 function Buoy:new(o)
   o = o or {}
   setmetatable(o, self)
   self.__index = self
+  
+  for option_name, option_config in ipairs(BUOY_OPTIONS) do
+    self.options[option_name] = option_config.default_value
+  end
+  
   return o
 end
 
--- function Buoy:deposit (v)
---   self.balance = self.balance + v
--- end
+-- TODO - work on parameterization like multiple samples, etc
+-- TODO - should have a map from buffer indexes to buoys so we
+----  can stop having the old one play if it gets replaced
+----  by the round robin
+function Buoy:update_depth(new_depth)
+  self.previous_depth = self.depth
+  self.depth = new_depth
+  
+  if self.depth == self.previous_depth then
+    return
+  end
+  
+  if self.softcut_buffer > 0 then
+    new_level = self.depth / max_depth()
+    softcut.level(self.softcut_buffer, new_level)
+  end
+  
+  if self.previous_depth == 0 then
+    self.softcut_buffer = next_softcut_buffer
+    -- voice stealing by round robin
+    old_buffer_buoy = buffer_buoy_map[self.softcut_buffer]
+    -- TODO - should round robin ejection be the only option, or
+    -- should there be other modes like no voice stealing?
+    if old_buffer_buoy then
+      old_buffer_buoy.softcut_buffer = -1
+    end
+    buffer_buoy_map[self.softcut_buffer] = self
+    next_softcut_buffer = ((next_softcut_buffer + 1) % NUM_SOFTCUT_BUFFERS) + 1
+    softcut.level(self.softcut_buffer, 1.0 * self.depth / max_depth())
+    softcut.position(self.softcut_buffer, 1)
+    softcut.play(self.softcut_buffer, 1)
+  elseif self.depth == 0 then
+    softcut.play(self.softcut_buffer, 0)
+    buffer_buoy_map[self.softcut_buffer] = nil
+    self.softcut_buffer = -1
+  end
+end
 
 -- grid
 
