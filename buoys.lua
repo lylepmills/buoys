@@ -1,6 +1,5 @@
--- pilings_v33.lua
--- insanity mode easter egg
--- other tweaks
+-- pilings_v34.lua
+-- pausing/unpausing options
 -- tidal influencer/activator/lightshow
 
 -- TODO LIST
@@ -9,9 +8,9 @@
 ---- hysteresis for triggered thresholds
 -- negative rates
 ---- have the sample start playing backward when the net velocity is backward (make this optional)
--- pausing should pause playback (optionally)
 -- settable start/end points for samples?
--- vertical arc mode?
+-- dead zone arc animation of some kind
+-- autosave periodically?
 
 -- LAST FEW THINGS
 -- use local variables
@@ -162,7 +161,6 @@ ALL_BUOY_OPTIONS = {
   -- TODO
   -- depth envelope response
   ---- position
-  ---- rate (will require new approach to determining when sound is finished)
   {
     name = "sound",
     default_value = 0,
@@ -200,6 +198,21 @@ ALL_BUOY_OPTIONS = {
     option_range = {-50, 50},
     option_step_value = 1,
     formatter = offset_formatter,
+  },
+  { name = "OPTION_SPACER" },
+  {
+    name = "play threshold",
+    default_value = 1,
+    option_range = {0, 14},
+    option_step_value = 1,
+    formatter = zero_is_none_formatter,
+  },
+  {
+    name = "reset threshold",
+    default_value = 0,
+    option_range = {0, 14},
+    option_step_value = 1,
+    formatter = zero_is_none_formatter,
   },
   { name = "OPTION_SPACER" },
   {
@@ -334,20 +347,43 @@ ALL_BUOY_OPTIONS = {
     option_step_value = 1,
     extended_only = true,
   },
-  { name = "OPTION_SPACER" },
+  { name = "OPTION_SPACER", extended_only = true },
+  -- TODO - handle negative rates?
   {
-    name = "play threshold",
-    default_value = 1,
-    option_range = {0, 14},
-    option_step_value = 1,
-    formatter = zero_is_none_formatter,
+    name = "zenith rate",
+    default_value = 1.0,
+    option_range = {0.01, 4.0},
+    option_step_value = 0.01,
   },
   {
-    name = "reset threshold",
-    default_value = 0,
-    option_range = {0, 14},
+    name = "nadir rate",
+    default_value = 1.0,
+    option_range = {0.01, 4.0},
+    option_step_value = 0.01,
+  },
+  {
+    name = "rate slew",
+    -- default to 0 instead of auto so that adjusting 
+    -- octave/semitone/cent offsets has immediate effect
+    default_value = 0.00,
+    option_range = {-0.01, 5.0},
+    option_step_value = 0.01,
+    formatter = negative_is_auto_formatter,
+    extended_only = true,
+  },
+  {
+    name = "rate zenith point",
+    default_value = 14,
+    option_range = {"rate nadir point", 14},
     option_step_value = 1,
-    formatter = zero_is_none_formatter,
+    extended_only = true,
+  },
+  {
+    name = "rate nadir point",
+    default_value = 0,
+    option_range = {0, "rate zenith point"},
+    option_step_value = 1,
+    extended_only = true,
   },
   { name = "OPTION_SPACER" },
   {
@@ -610,7 +646,6 @@ function init()
   meta_mode_option_index = 1
   file_select_active = false
   insanity_mode = false
-  tide_height_multiplier = 1.0
   crow_known_to_be_connected = crow.connected()
   external_clock_multiplier = 1
   dispersion_ui_brightnesses = {}
@@ -697,6 +732,12 @@ function max_depth_updated_action(max_depth)
   -- as a side effect of recomputing depths, particles_to_tide_depths will clear excess particles
   particles_to_tide_depths()
   
+  for i = 1, 8 do
+    for j = 1, 8 do
+      tide_shapes[i][j] = math.min(tide_shapes[i][j], max_depth)
+    end
+  end
+
   for i = 1, #all_buoy_options do
     buoy_option = all_buoy_options[i]
     if string.find(buoy_option.name, "zenith point") then
@@ -722,30 +763,83 @@ function max_depth_updated_action(max_depth)
 end
 
 function init_params()
-  params:add_group("PILINGS", 12)
+  params:add_group("PILINGS", 16)
   
   params:add{ type = "option", id = "channel_style", name = "channel style", options = { "open", "flume" } }
   params:add{ type = "option", id = "extended_buoy_params", name = "extended buoy params", options = { "off", "on" } }
   params:add{ type = "option", id = "smoothing", name = "visual smoothing", options = { "off", "on" }, default = 2 }
+  params:add{ type = "option", id = "pausing", name = "tides paused", options = { "pause buoys", "continue" } }
+  params:add{ type = "option", id = "unpausing", name = "tides unpaused", options = { "resume", "reset buoys" } }
   params:add_separator()
+  params:add_control("tide_height_multiplier", "tide height multiplier", controlspec.new(0.0, 1.0, "lin", 0.01, 1.0, nil))
   params:add{ type = "number", id = "angle", name = "wave angle", min = -60, max = 60, default = 0, formatter = degree_formatter }
   params:add{ type = "number", id = "dispersion", name = "dispersion", min = -25, max = 25, default = 10, action = dispersion_updated_action }
-  -- TODO - still would be nice to have options for midi mapping the other wave params
   params:add_separator()
-  -- don't allow clocks on both inputs, that's just going to make things confusing and not work well
-  params:add{ type = "option", id = "crow_input_1", name = "crow input 1", options = { "clock", "run", "start/stop", "reset" }, default = 1 }
-  params:add{ type = "option", id = "crow_input_2", name = "crow input 2", options = { "run", "start/stop", "reset" }, default = 1 }
+  params:add{ type = "option", id = "crow_input_1", name = "crow input 1", options = { "clock", "run", "start/stop", "reset" } }
+  params:add{ type = "option", id = "crow_input_2", name = "crow input 2", options = { "run", "start/stop", "reset" } }
   params:add_separator()
   params:add{ type = "number", id = "min_bright", name = "background brightness", min = 1, max = 3, default = 1 }
-  -- TODO - is max_depth respected at every point?
-  ---- in the tide editor
-  ---- new tide generation
-  ---- ???
   params:add{ type = "number", id = "max_depth", name = "max depth", min = 8, max = 14, default = 14, action = max_depth_updated_action }
+  params:add{ type = "option", id = "arc_orientation", name = "arc orientation", options = { "horizontal", "vertical" } }
 end
 
 function force_tide_update_next_tick()
   smoothing_counter = smoothing_factor - 1
+end
+
+function toggle_tides_paused()
+  if run then
+    pause_tides()
+  else
+    unpause_tides()
+  end
+end
+
+function pause_tides()
+  if not run then
+    return
+  end
+  
+  run = false
+  
+  for i = 1, softcut.VOICE_COUNT do
+    if params:get("pausing") == 1 then  -- pause buoys
+      buoy = buffer_buoy_map[i]
+      if buoy and buoy.active and buoy:currently_playing() then
+        softcut.play(i, 0)
+        paused_buffers[i] = true
+      end
+    end
+    -- if the pausing option is set to "continue", do nothing. 
+    -- voices will continue playing until they reach their endpoints, 
+    -- or continue indefinitely if they are set to loop.
+  end
+end
+
+function unpause_tides()
+  if run then
+    return
+  end
+  
+  recently_unpaused = true
+  run = true
+  
+  for i = 1, softcut.VOICE_COUNT do
+    -- if the unpausing option is set to "resume", do nothing.
+    -- voices that were paused will resume where they were and voices that 
+    -- were still playing will continue playing, unaffected.
+    if params:get("unpausing") == 2 then  -- reset buoys
+      buoy = buffer_buoy_map[i]
+      if buoy and buoy.active and buoy:currently_playing() then
+        buoy:reset_playhead()
+      end
+    end
+    
+    if paused_buffers[i] then
+      softcut.play(i, 1)
+      paused_buffers[i] = false
+    end
+  end
 end
 
 function process_midi_input(data)
@@ -761,10 +855,10 @@ function process_midi_input(data)
   elseif midi_msg.type == "start" or midi_msg.type == "continue" then
     midi_clock_era_counter = 0
     last_midi_clock_era_began = util.time()
-    run = true
+    unpause_tides()
   elseif midi_msg.type == "stop" then
     init_midi_in()
-    run = false
+    pause_tides()
   end
 end
 
@@ -818,11 +912,13 @@ function process_crow_first_input(v)
   if params:get("crow_input_1") == 1 and v == 1 then  -- clock
     process_crow_clock()
   elseif params:get("crow_input_1") == 2 then  -- run
-    run = v == 1
-    recently_unpaused = run
+    if v == 0 then
+      pause_tides()
+    else
+      unpause_tides()
+    end
   elseif params:get("crow_input_1") == 3 and v == 1 then  -- start/stop
-    run = not run
-    recently_unpaused = run
+    toggle_tides_paused()
   elseif params:get("crow_input_1") == 4 and v == 1 then  -- reset
     reset_tides()
   end
@@ -830,11 +926,13 @@ end
 
 function process_crow_second_input(v)
   if params:get("crow_input_2") == 1 then  -- run
-    run = v == 1
-    recently_unpaused = run
+    if v == 0 then
+      pause_tides()
+    else
+      unpause_tides()
+    end
   elseif params:get("crow_input_2") == 2 and v == 1 then  -- start/stop
-    run = not run
-    recently_unpaused = run
+    toggle_tides_paused()
   elseif params:get("crow_input_2") == 3 and v == 1 then  -- reset
     reset_tides()
   end
@@ -929,9 +1027,19 @@ function init_crow()
   crow.input[2].mode("change", 4.5, 0.25, "both")
 end
 
+function softcut_event_phase_callback(voice, phase)
+  if phase > 0.0 then
+    buoy = buffer_buoy_map[voice]
+    if not buoy:is_looping() then
+      buffer_buoy_map[voice].playing = false
+    end
+  end
+end
+
 function init_softcut()
   softcut.buffer_clear()
   buffer_buoy_map = {}
+  paused_buffers = {}
 
   for i = 1, softcut.VOICE_COUNT do
     softcut.enable(i, 1)
@@ -943,11 +1051,15 @@ function init_softcut()
     softcut.post_filter_lp(i, 1.0)
     softcut.post_filter_fc(i, 20000.0)
     buffer_buoy_map[i] = nil
+    paused_buffers[i] = false
 
     softcut.rate_slew_time(i, 0.0)
     softcut.level_slew_time(i, ADVANCE_TIME)
     softcut.pan_slew_time(i, ADVANCE_TIME)
   end
+  
+  softcut.event_phase(softcut_event_phase_callback)
+  softcut.poll_start_phase()
 end
 
 function crow_clock_received_recently()
@@ -1164,8 +1276,9 @@ function update_tide_maker_metro()
   for x = 1, g.cols do
     for y = 1, g.rows do
       if buoys[y][x] then
-        buoys[y][x]:update_level_slew()
+        buoys[y][x]:update_volume_slew()
         buoys[y][x]:update_pan_slew()
+        buoys[y][x]:update_rate_slew()
       end
     end
   end
@@ -1213,8 +1326,7 @@ function key(n, z)
       if n == 2 then
         displaying_buoys = not displaying_buoys
       elseif n == 3 then
-        run = not run
-        recently_unpaused = run
+        toggle_tides_paused()
       end
     end
     
@@ -1262,6 +1374,7 @@ function process_reverb_enc(d)
     rev_return_level = rev_return_level - d * 0.05
   end
       
+  -- TODO - is this silly? should we just increase the cut input up to a reasonable point?
   params:set("rev_cut_input", rev_cut_input)
   params:set("rev_return_level", rev_return_level)
 end
@@ -1434,7 +1547,7 @@ function new_tide(position)
     else
       num_new_particles = tide_shape()[tide_index] or 0
     end
-    num_new_particles = util.round(num_new_particles * tide_height_multiplier)
+    num_new_particles = util.round(num_new_particles * params:get("tide_height_multiplier"))
     
     while num_new_particles > 0 do
       if not is_piling(1, y) then
@@ -1829,7 +1942,9 @@ function redraw_regular_screen()
         screen.rect(x * 8 - 5.9, y * 8 - 5.9, 4.0, 4.0)
         screen.fill()
 
-        level = buoys[y][x]:currently_playing() and 15 or 5
+        -- we count not just currently playing but also very recently
+        -- played so that short samples will also appear in the display
+        level = buoys[y][x]:played_recently() and 15 or 5
         screen.level(level)
         screen.rect(x * 8 - 4.9, y * 8 - 4.9, 2.0, 2.0)
         screen.fill()
@@ -1869,11 +1984,13 @@ end
 function redraw_arc_lights()
   a:all(0)
   
+  orientation_offset = params:get("arc_orientation") == 1 and 0 or -16
+  
   -- tide height multiplier
   for i = 1, 32 do
-    if (tide_height_multiplier * 32) >= i then
-      a:led(1, i + 32, 15)
-      a:led(1, 33 - i, 15)
+    if (params:get("tide_height_multiplier") * 32) >= i then
+      a:led(1, i + 32 + orientation_offset, 15)
+      a:led(1, 33 - i + orientation_offset, 15)
     end
   end
   
@@ -1881,20 +1998,20 @@ function redraw_arc_lights()
   shape = tide_shape()
   for i = 1, 8 do
     for j = 1, 4 do
-      a:led(2, 12 + j + (i * 4), shape[i])
-      a:led(2, 16 + j - (i * 4), shape[i])
+      a:led(2, 12 + j + (i * 4) + orientation_offset, shape[i])
+      a:led(2, 16 + j - (i * 4) + orientation_offset, shape[i])
     end
   end
   
   -- wave angle
   led_offset = util.round((params:get("angle") / 90) * 16) + 1
-  a:led(3, led_offset - 1, 5)
-  a:led(3, led_offset, 15)
-  a:led(3, led_offset + 1, 5)
+  a:led(3, led_offset - 1 + orientation_offset, 5)
+  a:led(3, led_offset + orientation_offset, 15)
+  a:led(3, led_offset + 1 + orientation_offset, 5)
 
-  a:led(3, led_offset + 31, 5)
-  a:led(3, led_offset + 32, 15)
-  a:led(3, led_offset + 33, 5)
+  a:led(3, led_offset + 31 + orientation_offset, 5)
+  a:led(3, led_offset + 32 + orientation_offset, 15)
+  a:led(3, led_offset + 33 + orientation_offset, 5)
 
   -- dispersion
   for i = 1, 64 do
@@ -2035,6 +2152,7 @@ end
 
 Buoy = {
   active = false,
+  playing = false,
   being_edited = false,
   previous_depth = 0,
   depth = 0,
@@ -2065,6 +2183,8 @@ function Buoy:deactivate()
 end
 
 function Buoy:release_softcut_buffer()
+  self.playing = false
+  
   if self:has_softcut_buffer() then
     softcut.play(self.softcut_buffer, 0)
     buffer_buoy_map[self.softcut_buffer] = nil
@@ -2087,6 +2207,7 @@ function Buoy:update_depth(new_depth)
   self:update_volume()
   self:update_panning()
   self:update_filtering()
+  self:update_rate()
   self:update_crow()
   self:update_midi_cc_output()
   
@@ -2107,6 +2228,7 @@ function Buoy:reset_playhead()
   -- update_sound will reset playhead position
   self:update_sound()
   self.active_start_time = util.time()
+  self.playing = true
 end
 
 function Buoy:start_playing()
@@ -2127,15 +2249,16 @@ function Buoy:start_playing()
   
   self:setup_softcut_params()
   self.active_start_time = util.time()
+  self.playing = true
   softcut.play(self.softcut_buffer, 1)
 end
 
 function Buoy:setup_softcut_params()
   self:update_sound()
-  self:update_volume()
-  self:update_panning()
+  self:update_volume_immediately()
+  self:update_panning_immediately()
+  self:update_rate_immediately()
   self:update_filtering()
-  self:update_rate()
   self:update_looping()
 end
 
@@ -2209,7 +2332,16 @@ function next_softcut_buffer()
 end
 
 function Buoy:currently_playing()
-  return self.active_start_time > 0 and not self:finished_playing()
+  -- this is kind of redundant but nbd
+  return self.playing and not self:finished_playing()
+end
+
+function Buoy:played_recently()
+  if self:currently_playing() then
+    return true
+  end
+  
+  return (util.time() - self.active_start_time) < 0.1
 end
 
 function Buoy:finished_playing()
@@ -2221,9 +2353,7 @@ function Buoy:finished_playing()
     return false
   end
   
-  actual_duration = self:sound_details()["duration"] / self:effective_rate()
-  elapsed_time = util.time() - self.active_start_time
-  return elapsed_time > actual_duration
+  return not self.playing
 end
 
 function Buoy:update_option(name, value)
@@ -2232,11 +2362,11 @@ function Buoy:update_option(name, value)
   if name == "sound" then
     self:update_sound()
   elseif name == "octave offset" then
-    self:update_rate()
+    self:update_rate_immediately()
   elseif name == "semitone offset" then
-    self:update_rate()
+    self:update_rate_immediately()
   elseif name == "cent offset" then
-    self:update_rate()
+    self:update_rate_immediately()
   elseif name == "looping" then
     self:update_looping()
   elseif name == "zenith volume" then
@@ -2248,7 +2378,7 @@ function Buoy:update_option(name, value)
   elseif name == "volume nadir point" then
     self:update_volume()
   elseif name == "volume slew" then
-    self:update_level_slew()
+    self:update_volume_slew()
   elseif name == "zenith pan" then
     self:update_panning()
   elseif name == "nadir pan" then
@@ -2277,6 +2407,16 @@ function Buoy:update_option(name, value)
     self:update_filter_q()
   elseif name == "Q nadir point" then
     self:update_filter_q()
+  elseif name == "zenith rate" then
+    self:update_rate()
+  elseif name == "nadir rate" then
+    self:update_rate()
+  elseif name == "rate zenith point" then
+    self:update_rate()
+  elseif name == "rate nadir point" then
+    self:update_rate()
+  elseif name == "rate slew" then
+    self:update_rate_slew()
   elseif name == "midi output" then
     self:update_midi_output_index()
   elseif name == "zenith CC value" then
@@ -2340,6 +2480,7 @@ function Buoy:update_sound()
   softcut.loop_start(self.softcut_buffer, start_loc)
   softcut.loop_end(self.softcut_buffer, end_loc)
   softcut.position(self.softcut_buffer, start_pos)
+  softcut.phase_quant(self.softcut_buffer, end_loc - start_loc)
 end
 
 function Buoy:sound_details()
@@ -2347,14 +2488,24 @@ function Buoy:sound_details()
   return sample_details[sound_index]
 end
 
+function Buoy:update_panning_immediately()
+  if not self:has_softcut_buffer() then
+    return
+  end
+  
+  softcut.pan_slew_time(self.softcut_buffer, 0.0)
+  self:update_panning()
+  self:update_pan_slew()
+end
+
 function Buoy:update_panning()
   if not self:has_softcut_buffer() then
     return
   end
   
-  ltp = self.options["nadir pan"]
-  htp = self.options["zenith pan"]
-  new_pan = ltp + ((htp - ltp) * self:tide_ratio("pan"))
+  np = self.options["nadir pan"]
+  zp = self.options["zenith pan"]
+  new_pan = np + ((zp - np) * self:tide_ratio("pan"))
   softcut.pan(self.softcut_buffer, new_pan)
 end
 
@@ -2423,10 +2574,10 @@ function Buoy:update_filtering()
     return
   end
   
-  ltc = self.options["nadir filter cutoff"]
-  htc = self.options["zenith filter cutoff"]
+  nfc = self.options["nadir filter cutoff"]
+  zfc = self.options["zenith filter cutoff"]
   filter_type = self.options["filter type"]
-  new_cutoff = ltc + ((htc - ltc) * self:tide_ratio("cutoff"))
+  new_cutoff = nfc + ((zfc - nfc) * self:tide_ratio("cutoff"))
   
   softcut.post_filter_lp(self.softcut_buffer, 0)
   softcut.post_filter_hp(self.softcut_buffer, 0)
@@ -2464,14 +2615,24 @@ function Buoy:update_filter_q()
   softcut.post_filter_rq(self.softcut_buffer, new_rq)
 end
 
+function Buoy:update_volume_immediately()
+  if not self:has_softcut_buffer() then
+    return
+  end
+  
+  softcut.level_slew_time(self.softcut_buffer, 0.0)
+  self:update_volume()
+  self:update_volume_slew()
+end
+
 function Buoy:update_volume()
   if not self:has_softcut_buffer() then
     return
   end
   
-  ltv = self.options["nadir volume"]
-  htv = self.options["zenith volume"]
-  new_level = ltv + ((htv - ltv) * self:tide_ratio("volume"))
+  nv = self.options["nadir volume"]
+  zv = self.options["zenith volume"]
+  new_level = nv + ((zv - nv) * self:tide_ratio("volume"))
   softcut.level(self.softcut_buffer, new_level)
 end
 
@@ -2491,7 +2652,7 @@ function Buoy:update_looping()
   softcut.loop(self.softcut_buffer, self:is_looping() and 1 or 0)
 end
 
-function Buoy:update_level_slew()
+function Buoy:update_volume_slew()
   if not self:has_softcut_buffer() then
     return
   end
@@ -2523,6 +2684,16 @@ function Buoy:is_looping()
   return self.options["looping"] == 2
 end
 
+function Buoy:update_rate_immediately()
+  if not self:has_softcut_buffer() then
+    return
+  end
+  
+  softcut.rate_slew_time(self.softcut_buffer, 0.0)
+  self:update_rate()
+  self:update_rate_slew()
+end
+
 function Buoy:update_rate()
   if not self:has_softcut_buffer() then
     return
@@ -2531,12 +2702,32 @@ function Buoy:update_rate()
   softcut.rate(self.softcut_buffer, self:effective_rate())
 end
 
+function Buoy:update_rate_slew()
+  if not self:has_softcut_buffer() then
+    return
+  end
+  
+  slew_time = self.options["rate slew"]
+  -- "auto" slew
+  if slew_time < 0 then
+    slew_time = tide_advance_time
+  end
+  
+  softcut.rate_slew_time(self.softcut_buffer, slew_time)
+end
+
 function Buoy:effective_rate()
   octave_offset = self.options["octave offset"]
   semitone_offset = self.options["semitone offset"]
   cent_offset = self.options["cent offset"]
   
-  return 2.0 ^ (octave_offset + (semitone_offset / 12) + (cent_offset / 1200))
+  unmodulated_rate = 2.0 ^ (octave_offset + (semitone_offset / 12) + (cent_offset / 1200))
+  
+  nr = self.options["nadir rate"]
+  zr = self.options["zenith rate"]
+  new_rate_multiplier = nr + ((zr - nr) * self:tide_ratio("rate"))
+    
+  return unmodulated_rate * new_rate_multiplier
 end
 
 -- grid
@@ -2576,7 +2767,7 @@ g.key = function(x, y, z)
           num_tide_shapes_in_sequence = 1
         end
       else
-        tide_shapes[edited_shape_index()][y] = 16 - x
+        tide_shapes[edited_shape_index()][y] = math.min(16 - x, params:get("max_depth"))
       end
     end
   else
@@ -2616,7 +2807,7 @@ end
 
 function a.delta(n, d)
   if n == 1 then
-    tide_height_multiplier = util.clamp(tide_height_multiplier + (d * 0.001), 0.0, 1.0)
+    params:delta("tide_height_multiplier", d * 0.1)
   elseif n == 2 then
     tide_shape_index = tide_shape_index + (d * 0.01)
     if tide_shape_index >= 9 then
