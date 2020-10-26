@@ -1,34 +1,62 @@
--- pilings_v38.lua
--- crow input improvements
----- cv ins for four main tide params
----- preventing both from being set to the same value except none
--- crow trigger output improved to use a/s/l
--- tidal influencer/activator/lightshow
-
--- LAST FEW THINGS
--- use local variables
--- organize into libs?
-
--- NOTES FOR RELEASE
--- not a perfect physical simulation, not intended to be
--- concept of safeguards - e.g. 
----- downshifting the clock multiplier if the external clock is too fast
----- clumping particles when there are a lot of them
--- performance tips
----- decrease max height (can use options menu to force this)
----- mute rows that aren't needed
+-- buoys
+-- tidal influencer/activator
+--
+-- grid required (varibright 128)
+-- enhanced by arc
+-- crow + midi capable
+--
+-- place buoys on the grid to 
+-- make sounds or modulations 
+-- (via crow or midi) as tides 
+-- pass them by. place pilings to
+-- disrupt the tidal movement.
+--
+-- various sound parameters 
+-- can be modulated by tide 
+-- depth such as playback 
+-- volume, playback rate, 
+-- and filter cutoff.
+--
+-- norns controls
+-- --------------
+-- E1 - reverb macro
+-- E2 - tide advance time
+-- E3 - tide gap
+-- K2 - toggle grid buoy display
+-- K3 - pause/unpause tides
+-- K2+K3 (held) - tide editor
+--
+-- grid controls
+-- -------------
+-- long press grid keys to 
+-- add and/or edit buoys
+-- short press grid keys to 
+-- toggle pilings
+-- press all four grid corner
+-- keys for meta mode (sample
+-- loading, etc)
+--
+-- arc controls
+-- ------------
+-- ring 1 = tide height multiplier
+-- ring 2 = tide shape morphing
+-- ring 3 = tide angle
+-- ring 4 = dispersion
+--
+-- @lylem v0.0
 
 -- IDEAS FOR LATER VERSIONS
--- 1. negative rates
--- 2. buffer position modulation
--- 3. live input processing
--- 4. stereo samples
--- 5. expanded midi support (note on triggers, velocity, poly aftertouch?)
--- 6. find a good way to support loading samples from multiple folders
--- 7. filter slew options (when possible in softcut)
--- 8. use loop-point-crossing callback (when possible in softcut)
--- 9. MYSTERY E1 FEATURE???
--- 10. more realistic behavior when tides exceed max tide depth, e.g.
+-- 1. finish preset saving/loading
+-- 2. negative rates
+-- 3. buffer position modulation
+-- 4. live input processing
+-- 5. stereo samples
+-- 6. expanded midi support (note on triggers, velocity, poly aftertouch?)
+-- 7. find a good way to support loading samples from multiple folders
+-- 8. filter slew options (when possible in softcut)
+-- 9. use loop-point-crossing callback (when possible in softcut)
+-- 10. MYSTERY E1 FEATURE???
+-- 11. more realistic behavior when tides exceed max tide depth, e.g.
 --     when a bunch of them get stuck up against a wall
 
 -- ACKNOWLEDGEMENTS
@@ -41,18 +69,14 @@
 
 fileselect = require "fileselect"
 
-RUN = true
-RUN_SIMPLE = true
-RUN_DEBUG = false
+local DISPERSION_MULTIPLE = 0.001
 
-DISPERSION_MULTIPLE = 0.001
-
-ADVANCE_TIME = 0.2
-SMOOTHING_FACTOR = 4
-TIDE_GAP = 32
+local ADVANCE_TIME = 0.2
+local SMOOTHING_FACTOR = 4
+local TIDE_GAP = 32
 -- sinces waves move from left to right, they 
 -- will appear flipped vs these definitions
-BASE_TIDE_SHAPES = {
+local BASE_TIDE_SHAPES = {
   {3, 8, 14, 12, 10, 8, 5, 1},
   {2, 5, 8, 11, 14, 0, 0, 0},
   {4, 9, 14, 9, 4, 0, 0, 0},
@@ -62,25 +86,25 @@ BASE_TIDE_SHAPES = {
   {14, 0, 0, 10, 0, 0, 6, 0},
   {8, 8, 8, 8, 8, 8, 8, 8},
 }
-COLLISION_OVERALL_DAMPING = 0.2
-COLLISION_DIRECTIONAL_DAMPING = 0.5
-VELOCITY_AVERAGING_FACTOR = 0.6
-DISPERSION_VELOCITY_FACTOR = 0.125
-SAMPLE_SPACING_BUFFER_TIME = 0.5
-MIN_TIDE_ADVANCE_TIME = 0.1
-LONG_PRESS_TIME = 1.0
-BACKGROUND_METRO_TIME = 0.1
-POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
-META_MODE_KEYS = { { x=1, y=1 }, { x=1, y=8 }, { x=16, y=1 }, { x=16, y=8 } }
-META_MODE_OPTIONS = { "choose sample folder", "clear inactive buoys", "save preset", "load preset", "exit" }
-CROW_INPUT_OPTIONS = { "none", "clock", "run", "start/stop", "reset", "cv tide height", "cv tide shape", "cv tide angle", "cv dispersion" }
+local COLLISION_OVERALL_DAMPING = 0.2
+local COLLISION_DIRECTIONAL_DAMPING = 0.5
+local VELOCITY_AVERAGING_FACTOR = 0.6
+local DISPERSION_VELOCITY_FACTOR = 0.125
+local SAMPLE_SPACING_BUFFER_TIME = 0.5
+local MIN_TIDE_ADVANCE_TIME = 0.1
+local LONG_PRESS_TIME = 1.0
+local BACKGROUND_METRO_TIME = 0.1
+local POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
+local META_MODE_KEYS = { { x=1, y=1 }, { x=1, y=8 }, { x=16, y=1 }, { x=16, y=8 } }
+local META_MODE_OPTIONS = { "choose sample folder", "clear inactive buoys", "save preset", "load preset", "exit" }
+local CROW_INPUT_OPTIONS = { "none", "clock", "run", "start/stop", "reset", "cv tide height", "cv tide shape", "cv tide angle", "cv dispersion" }
 
-NUM_MIDI_CLOCKS_PER_CHECK = 24
-NUM_CROW_CLOCKS_PER_CHECK = 8
+local NUM_MIDI_CLOCKS_PER_CHECK = 24
+local NUM_CROW_CLOCKS_PER_CHECK = 8
 -- higher standard for midi because we get a lot more clocks to work with
 -- in a shorter period of time
-ACCEPTABLE_CLOCK_DRIFT_CROW = 0.01
-ACCEPTABLE_CLOCK_DRIFT_MIDI = 0.005
+local ACCEPTABLE_CLOCK_DRIFT_CROW = 0.01
+local ACCEPTABLE_CLOCK_DRIFT_MIDI = 0.005
 
 function sound_option_formatter(value)
   if value == 0 then
@@ -151,7 +175,11 @@ function negative_is_auto_formatter(value)
   return tostring(value)
 end
 
-ALL_BUOY_OPTIONS = {
+function degree_formatter(tbl)
+  return tbl.value .. " degrees"
+end
+
+local ALL_BUOY_OPTIONS = {
   {
     name = "sound",
     default_value = 0,
@@ -678,24 +706,11 @@ function init()
   init_crow()
   init_midi_in()
   
-  if RUN_SIMPLE then
-    params:set("tide_shape_index", 6.0)
-    params:set("dispersion", 0)
-    params:set("smoothing", 1)
-    tide_gap = 16
-  end
-  
-  if RUN_DEBUG then
-    -- params:set("crow_input_2", 8)
-  end
-  
-  if RUN then
-    tide_maker = metro.init(smoothly_make_tides, current_tide_delta)
-    tide_maker:start()
-    background_metro = metro.init(background_metro_tasks, BACKGROUND_METRO_TIME)
-    background_metro:start()
-    -- TODO - start a slower metro for saving the current state to the auto slot
-  end
+  tide_maker = metro.init(smoothly_make_tides, current_tide_delta)
+  tide_maker:start()
+  background_metro = metro.init(background_metro_tasks, BACKGROUND_METRO_TIME)
+  background_metro:start()
+  -- TODO: start a slower metro for saving the current state to the auto slot
 end
 
 function modulo_base_one(num, modulus)
@@ -851,7 +866,7 @@ function max_depth_updated_action(max_depth)
 end
 
 function init_params()
-  params:add_group("PILINGS", 17)
+  params:add_group("BUOYS", 17)
   
   params:add{ type = "option", id = "channel_style", name = "channel style", options = { "open", "flume" } }
   params:add{ type = "option", id = "extended_buoy_params", name = "extended buoy params", options = { "off", "on" } }
@@ -1351,8 +1366,6 @@ function meta_mode_keys_held()
   return true
 end
 
-
-
 function update_dispersion_ui()
   for i = 1, 64 do
     if flip_coin(dispersion_factor()) then
@@ -1434,7 +1447,7 @@ end
 
 function key(n, z)
   key_states[n] = z
-  -- TODO - handle save_preset_mode and load_preset_mode
+  -- TODO: handle save_preset_mode and load_preset_mode
   if meta_mode then
     if z == 1 then
       return
@@ -1472,13 +1485,13 @@ function key(n, z)
   end
 end
 
--- TODO - finish
+-- TODO: finish
 function enter_save_preset_select()
-  save_preset_mode = true
+  -- save_preset_mode = true
 end
 
 function enter_load_preset_select()
-  load_preset_mode = true
+  -- load_preset_mode = true
 end
 
 function exit_meta_mode()
@@ -1514,7 +1527,7 @@ function enc(n, d)
     return
   end
   
-  -- TODO - handle save_preset_mode and load_preset_mode
+  -- TODO: handle save_preset_mode and load_preset_mode
   if meta_mode then
     if n == 2 then
       meta_mode_option_index = util.clamp(meta_mode_option_index + d, 1, #META_MODE_OPTIONS)
@@ -1583,10 +1596,6 @@ function edit_buoys(d)
       end
     end
   end
-end
-
-function degree_formatter(tbl)
-  return tbl.value .. " degrees"
 end
 
 function smoothly_make_tides()
@@ -1956,7 +1965,7 @@ function redraw()
   screen.update()
 end
 
--- TODO - finish
+-- TODO: finish
 function redraw_save_preset_mode_screen()
   
 end
@@ -2925,7 +2934,7 @@ end
 -- grid
 
 g.key = function(x, y, z)
-  -- TODO - handle save_preset_mode and load_preset_mode
+  -- TODO: handle save_preset_mode and load_preset_mode
   if meta_mode then
     return
   end
