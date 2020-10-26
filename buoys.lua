@@ -1,45 +1,41 @@
--- pilings_v30.lua
--- various TODOS
-
--- tidal influencer/activator
+-- pilings_v31.lua
+-- midi sync
+-- tidal influencer/activator/lightshow
 
 -- TODO LIST
 -- tune defaults
 ---- especially collisions
--- allow diagonal movement (option)?
----- POTENTIAL_DISPERSION_DIRECTIONS?
----- also roll_forward()?
--- do something about disappearing density when you hit a wall?
----- excessive density could lead to faster speeds, much like IRL
----- optional overflow mode?
--- could dispersion look better if it were more concentric instead of UDLR?
--- some kind of estimation to make it faster when there are a lot of particles?
--- pick E1 use
----- macro control?
----- filtered noise volume (would have to write a SC engine for this)
--- if wave depth can affect playhead position, that could be used for granular stuff
--- figure out how we're going to do slews - will they sound right for things like filtering?
--- midi CC outputs, midi sync.
----- https://github.com/markwheeler/changes/blob/main/changes.lua
--- use util methods where possible
--- use controlspecs more?
 -- check display logic for buoys in terms of both grid lights and norns display, seems to be some inconsistencies
 -- make a util method for all the places where we use the % operator in a weird way to constrain to a [1, x] range
--- extended_only params
----- hysteresis for triggered thresholds?
+-- more extended_only params
+---- hysteresis for triggered thresholds
 -- test midi mapping
 -- use local variables
--- clocks?
----- https://vimeo.com/416730766
 -- negative rates
 ---- have the sample start playing backward when the net velocity is backward (make this optional)
--- organize buoy params into a two-layer nested menu?
----- would we even need extended_only?
 -- fix floating point display stuff
 -- should pausing also pause the loops?
+-- organize into libs?
+-- negative dispersion
+-- settable start/end points for samples?
+-- cv in per buoy
+-- granular mode!!!
+---- as things move over, the wave density could be reflective of the likelihood of playing
+---- a particular grain
+-- maybe make the code more organized so the interface layer could be repurposed for a different app
+---- e.g. a granular mode where each column density relates to the likelihood of playing a particular grain,
+---- and each row is a different sample
+-- make E1 control reverb send?
+-- make crow input 2 a run/reset type thing?
+
 
 -- NOTES FOR RELEASE
--- concept of safeguards - e.g. how we downshift the clock multiplier if the clock is too fast
+-- concept of safeguards - e.g. 
+---- downshifting the clock multiplier if the external clock is too fast
+---- clumping particles when there are a lot of them
+-- performance tips
+---- decrease max height (can use options menu to force this)
+---- mute rows that aren't needed
 
 
 -- IDEAS FOR LATER VERSIONS
@@ -47,18 +43,22 @@
 -- 2. stereo samples
 -- 3. better alternate sample rate support
 --    (https://llllllll.co/t/norns-2-0-softcut/20550/176)
--- 4. zenith/nadir rate multipliers?
---    (would require new approach to determining when sound is finished)
--- 5. use second crow input as assignable CV control
--- 6. expanded midi support (note on triggers, velocity, poly aftertouch?)
+-- 4. use second crow input as assignable CV control
+-- 5. expanded midi support (note on triggers, velocity, poly aftertouch?)
+-- 6. find a good way to support loading samples from multiple folders
+-- 7. filter slew options (when possible in softcut)
+-- 8. MYSTERY E1 FEATURE???
+-- 9. more realistic behavior when tides exceed max tide depth, e.g.
+--    when a bunch of them get stuck up against a wall
 
 -- ACKNOWLEDGEMENTS
--- I borrowed some file/folder loading logic from Timber Player, thanks @markeats.
+-- I borrowed some file/folder loading logic from Timber Player, and some midi
+-- stuff from Changes, thanks @markeats.
 
 fileselect = require "fileselect"
-tabutil = require "tabutil"  -- TODO - remove when done
 
 RUN = true
+RUN_SIMPLE = true
 
 DISPERSION_MULTIPLE = 0.001
 
@@ -80,7 +80,7 @@ BASE_TIDE_SHAPES = {
 COLLISION_OVERALL_DAMPING = 0.2
 COLLISION_DIRECTIONAL_DAMPING = 0.5
 VELOCITY_AVERAGING_FACTOR = 0.6
-DISPERSION_VELOCITY_FACTOR = 0.1
+DISPERSION_VELOCITY_FACTOR = 0.125
 SAMPLE_SPACING_BUFFER_TIME = 0.5
 MIN_TIDE_ADVANCE_TIME = 0.1
 LONG_PRESS_TIME = 1.0
@@ -88,8 +88,12 @@ BACKGROUND_METRO_TIME = 0.1
 POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
 META_MODE_KEYS = { { x=1, y=1 }, { x=1, y=8 }, { x=16, y=1 }, { x=16, y=8 } }
 META_MODE_OPTIONS = { "choose sample folder", "clear inactive buoys", "save state", "load state", "exit" }
+NUM_MIDI_CLOCKS_PER_CHECK = 24
 NUM_CROW_CLOCKS_PER_CHECK = 8
-ACCEPTABLE_CLOCK_DRIFT = 0.01
+-- higher standard for midi because we get a lot more clocks to work with
+-- in a shorter period of time
+ACCEPTABLE_CLOCK_DRIFT_CROW = 0.01
+ACCEPTABLE_CLOCK_DRIFT_MIDI = 0.005
 
 function sound_option_formatter(value)
   if value == 0 then
@@ -131,6 +135,19 @@ function offset_formatter(value)
   return tostring(value)
 end
 
+function midi_output_formatter(value)
+  if value == 0 then
+    return "none"
+  end
+  
+  name = midi.connect(value).name
+  if name ~= "none" then
+    return name
+  end
+  
+  return tostring(value)
+end
+
 function zero_is_none_formatter(value)
   if value == 0 then
     return "none"
@@ -147,82 +164,11 @@ function negative_is_auto_formatter(value)
   return tostring(value)
 end
 
-function file_select_finished_callback(full_file_path)
-  file_select_active = false
-  if full_file_path ~= "cancel" then
-    load_sound_folder(full_file_path)
-  end
-  
-  exit_meta_mode()
-end
-
-function load_sound_folder(full_file_path)
-  softcut.buffer_clear_channel(1)
-  sample_details = {}
-  next_sample_start_location = 1.0
-  
-  folder, _ = split_file_path(full_file_path)
-  
-  for _, filename in ipairs(fileselect.list) do
-    filename_lower = filename:lower()
-    
-    if string.find(filename_lower, ".wav") or string.find(filename_lower, ".aif") or string.find(filename_lower, ".aiff") then
-      load_sound(folder .. filename)
-    end
-  end
-  
-  update_sound_options()
-end
-
-function load_sound(full_file_path)
-  local _, samples, sample_rate = audio.file_info(full_file_path)
-  local sample_duration = samples / sample_rate
-  if sample_rate ~= 48000 then
-    sample_rate_warning_countdown = 30
-  end
-  
-  if (next_sample_start_location + sample_duration) > softcut.BUFFER_SIZE then
-    return
-  end
-  
-  softcut.buffer_read_mono(full_file_path, 0, next_sample_start_location, -1, 1, 1)
-  _, filename = split_file_path(full_file_path)
-  details = {
-    name = filename,
-    duration = sample_duration,
-    start_location = next_sample_start_location,
-  }
-  table.insert(sample_details, details)
-  
-  next_sample_start_location = util.round_up(
-    next_sample_start_location + sample_duration + SAMPLE_SPACING_BUFFER_TIME)
-end
-
-function split_file_path(full_file_path)
-  local split_at = string.match(full_file_path, "^.*()/")
-  local folder = string.sub(full_file_path, 1, split_at)
-  local file = string.sub(full_file_path, split_at + 1)
-  return folder, file
-end
-
-function split_file_extension(filename)
-  local split_at = string.match(filename, "^.*()%.")
-  local name_without_extension = string.sub(filename, 1, split_at - 1)
-  local extension = string.sub(filename, split_at + 1)
-  return name_without_extension, extension
-end
-
-function update_sound_options()
-  all_buoy_options[1].option_range = {0, #sample_details}
-end
-
-all_buoy_options = {
+ALL_BUOY_OPTIONS = {
   -- TODO
-  -- slews for things that don't have softcut builtins (auto vs controlled)
-  ---- especially filter cutoff/q
   -- depth envelope response
-  ---- position?
-  -- spaces between categories?
+  ---- position
+  ---- rate (will require new approach to determining when sound is finished)
   {
     name = "sound",
     default_value = 0,
@@ -261,6 +207,7 @@ all_buoy_options = {
     option_step_value = 1,
     formatter = offset_formatter,
   },
+  { name = "OPTION_SPACER" },
   {
     name = "zenith volume",
     default_value = 1.0,
@@ -295,6 +242,7 @@ all_buoy_options = {
     option_step_value = 1,
     extended_only = true,
   },
+  { name = "OPTION_SPACER", extended_only = true },
   {
     name = "zenith pan",
     default_value = 0.0,
@@ -331,6 +279,7 @@ all_buoy_options = {
     option_step_value = 1,
     extended_only = true,
   },
+  { name = "OPTION_SPACER", extended_only = true },
   {
     name = "filter type",
     default_value = 1,
@@ -364,6 +313,7 @@ all_buoy_options = {
     option_step_value = 1,
     extended_only = true,
   },
+  { name = "OPTION_SPACER", extended_only = true },
   {
     name = "zenith filter Q",
     default_value = 0,
@@ -372,7 +322,7 @@ all_buoy_options = {
   },
   {
     name = "nadir filter Q",
-    default_value = 100,
+    default_value = 0,
     option_range = {0, 100},
     option_step_value = 1,
   },
@@ -390,6 +340,7 @@ all_buoy_options = {
     option_step_value = 1,
     extended_only = true,
   },
+  { name = "OPTION_SPACER" },
   {
     name = "play threshold",
     default_value = 1,
@@ -404,6 +355,53 @@ all_buoy_options = {
     option_step_value = 1,
     formatter = zero_is_none_formatter,
   },
+  { name = "OPTION_SPACER" },
+  {
+    name = "midi output",
+    default_value = 0,
+    option_range = {0, 4},
+    option_step_value = 1,
+    formatter = midi_output_formatter,
+  },
+  {
+    name = "midi out channel",
+    default_value = 1,
+    option_range = {1, 16},
+    option_step_value = 1,
+  },
+  {
+    name = "midi out CC number",
+    default_value = 1,
+    option_range = {0, 127},
+    option_step_value = 1,
+  },
+  {
+    name = "zenith CC value",
+    default_value = 0,
+    option_range = {0, 127},
+    option_step_value = 1,
+  },
+  {
+    name = "nadir CC value",
+    default_value = 0,
+    option_range = {0, 127},
+    option_step_value = 1,
+  },
+  {
+    name = "midi CC zenith point",
+    default_value = 14,
+    option_range = {"midi CC nadir point", 14},
+    option_step_value = 1,
+    extended_only = true,
+  },
+  {
+    name = "midi CC nadir point",
+    default_value = 0,
+    option_range = {0, "midi CC zenith point"},
+    option_step_value = 1,
+    extended_only = true,
+  },
+  { name = "OPTION_SPACER", crow_only = true },
   {
     name = "crow output",
     default_value = 0,
@@ -467,6 +465,87 @@ all_buoy_options = {
   },
 }
 
+
+function file_select_finished_callback(full_file_path)
+  file_select_active = false
+  if full_file_path ~= "cancel" then
+    load_sound_folder(full_file_path)
+  end
+  
+  exit_meta_mode()
+end
+
+function load_sound_folder(full_file_path)
+  softcut.buffer_clear_channel(1)
+  sample_details = {}
+  next_sample_start_location = 1.0
+  
+  folder, _ = split_file_path(full_file_path)
+  
+  for _, filename in ipairs(fileselect.list) do
+    filename_lower = filename:lower()
+    
+    if string.find(filename_lower, ".wav") or string.find(filename_lower, ".aif") or string.find(filename_lower, ".aiff") then
+      load_sound(folder .. filename)
+    end
+  end
+  
+  update_sound_options()
+  refresh_buoy_sounds()
+end
+
+function refresh_buoy_sounds()
+  for x = 1, g.cols do
+    for y = 1, g.rows do
+      if buoys[y][x] then
+        buoys[y][x]:update_sound()
+      end
+    end
+  end
+end
+
+function load_sound(full_file_path)
+  local _, samples, sample_rate = audio.file_info(full_file_path)
+  local sample_duration = samples / sample_rate
+  if sample_rate ~= 48000 then
+    sample_rate_warning_countdown = 30
+  end
+  
+  if (next_sample_start_location + sample_duration) > softcut.BUFFER_SIZE then
+    return
+  end
+  
+  softcut.buffer_read_mono(full_file_path, 0, next_sample_start_location, -1, 1, 1)
+  _, filename = split_file_path(full_file_path)
+  details = {
+    name = filename,
+    duration = sample_duration,
+    start_location = next_sample_start_location,
+  }
+  table.insert(sample_details, details)
+  
+  next_sample_start_location = util.round_up(
+    next_sample_start_location + sample_duration + SAMPLE_SPACING_BUFFER_TIME)
+end
+
+function split_file_path(full_file_path)
+  local split_at = string.match(full_file_path, "^.*()/")
+  local folder = string.sub(full_file_path, 1, split_at)
+  local file = string.sub(full_file_path, split_at + 1)
+  return folder, file
+end
+
+function split_file_extension(filename)
+  local split_at = string.match(filename, "^.*()%.")
+  local name_without_extension = string.sub(filename, 1, split_at - 1)
+  local extension = string.sub(filename, split_at + 1)
+  return name_without_extension, extension
+end
+
+function update_sound_options()
+  all_buoy_options[1].option_range = {0, #sample_details}
+end
+
 function buoy_options()
   show_extended_params = params:get("extended_buoy_params") == 2
   show_crow_params = crow.connected()
@@ -515,6 +594,8 @@ function init()
   tide_gap = TIDE_GAP
   tide_advance_time = ADVANCE_TIME
   smoothing_factor = SMOOTHING_FACTOR
+  current_tide_delta = tide_advance_time / smoothing_factor
+  all_buoy_options = ALL_BUOY_OPTIONS
 
   old_grid_lighting = fresh_grid(params:get("min_bright"))
   new_grid_lighting = fresh_grid(params:get("min_bright"))
@@ -525,8 +606,8 @@ function init()
   smoothing_counter = 0
   tide_info_overlay_countdown = 0
   sample_rate_warning_countdown = 0
-  crow_clock_warning_countdown = 0
-  crow_clock_warning_details = {}
+  external_clock_warning_countdown = 0
+  external_clock_warning_details = {}
   key_states = {0, 0, 0}
   was_editing_tides = false
   meta_mode = false
@@ -534,7 +615,7 @@ function init()
   file_select_active = false
   tide_height_multiplier = 1.0
   crow_known_to_be_connected = crow.connected()
-  crow_clock_multiplier = 1
+  external_clock_multiplier = 1
   dispersion_ui_brightnesses = {}
   sample_details = {}
   for i = 1, 64 do
@@ -543,9 +624,17 @@ function init()
 
   init_softcut()
   init_crow()
+  init_midi_in()
+  
+  if RUN_SIMPLE then
+    tide_shape_index = 6.0
+    params:set("dispersion", 0)
+    params:set("smoothing", 1)
+    tide_gap = 16
+  end
   
   if RUN then
-    tide_maker = metro.init(smoothly_make_tides, tide_advance_time / smoothing_factor)
+    tide_maker = metro.init(smoothly_make_tides, current_tide_delta)
     tide_maker:start()
     background_metro = metro.init(background_metro_tasks, BACKGROUND_METRO_TIME)
     background_metro:start()
@@ -602,7 +691,7 @@ function max_depth_updated_action(max_depth)
 end
 
 function init_params()
-  params = paramset.new()
+  params:add_group("PILINGS", 9)
   
   params:add{ type = "option", id = "channel_style", name = "channel style", options = { "open", "flume" } }
   params:add{ type = "option", id = "extended_buoy_params", name = "extended buoy params", options = { "off", "on" } }
@@ -611,12 +700,78 @@ function init_params()
   params:add{ type = "number", id = "angle", name = "wave angle", min = -60, max = 60, default = 0, formatter = degree_formatter }
   params:add{ type = "number", id = "dispersion", name = "dispersion", min = 0, max = 25, default = 10 }
   params:add_separator()
-  params:add{ type = "number", id = "min_bright", name = "min brightness", min = 1, max = 3, default = 1 }
+  params:add{ type = "number", id = "min_bright", name = "background brightness", min = 1, max = 3, default = 1 }
   params:add{ type = "number", id = "max_depth", name = "max depth", min = 8, max = 14, default = 14, action = max_depth_updated_action }
 end
 
 function force_tide_update_next_tick()
   smoothing_counter = smoothing_factor - 1
+end
+
+function process_midi_input(data)
+  -- crow sync takes priority over midi sync, since it's generally easier
+  -- to unpatch the crow clock input than disable midi clock
+  if crow_clock_received_recently() then
+    return
+  end
+  
+  midi_msg = midi.to_msg(data)
+  if midi_msg.type == "clock" then
+    process_midi_clock()
+  elseif midi_msg.type == "start" or midi_msg.type == "continue" then
+    midi_clock_era_counter = 0
+    last_midi_clock_era_began = util.time()
+    run = true
+  elseif midi_msg.type == "stop" then
+    init_midi_in()
+    run = false
+  end
+end
+
+function process_midi_clock()
+  current_time = util.time()
+  last_midi_clock_received = current_time
+  
+  if not last_midi_clock_era_began then
+    last_midi_clock_era_began = current_time
+    return
+  end
+  
+  midi_clock_era_counter = midi_clock_era_counter + 1
+  if midi_clock_era_counter % NUM_MIDI_CLOCKS_PER_CHECK ~= 0 then
+    return
+  end
+  
+  -- restore maximum synchronicity after unpausing, but only once
+  -- we have a relatively stable clock
+  if recently_unpaused and midi_clock_era_counter > 100 then
+    recently_unpaused = false
+    force_tide_update_next_tick()
+  end
+  
+  -- we assume midi clocks are all using 24 PPQN
+  expected_tick_time = (tide_advance_time * external_clock_multiplier) / 24
+  expected_time = last_midi_clock_era_began + (expected_tick_time * midi_clock_era_counter)
+  drift = current_time - expected_time
+  
+  -- clock timing can be imprecise - tracking drift strikes a compromise between quickly
+  -- adapting to changes in clock rate and making too many updates to the tide_maker metro, 
+  -- which has it's own disadvantages
+  if math.abs(drift) < ACCEPTABLE_CLOCK_DRIFT_MIDI then
+    if force_advance_time_update then
+      set_advance_time_with_external_clocks()
+    end
+    
+    return
+  end
+  
+  clock_era_elapsed_time = current_time - last_midi_clock_era_began
+  clock_delta = (clock_era_elapsed_time * 24) / midi_clock_era_counter
+
+  midi_clock_era_counter = 0
+  last_midi_clock_era_began = current_time
+  
+  set_advance_time_with_external_clocks()
 end
 
 function process_crow_clock(v)
@@ -640,17 +795,16 @@ function process_crow_clock(v)
     return
   end
   
-  expected_tick_time = tide_advance_time * crow_clock_multiplier
+  expected_tick_time = tide_advance_time * external_clock_multiplier
   expected_time = last_crow_clock_era_began + (expected_tick_time * crow_clock_era_counter)
   drift = current_time - expected_time
   
   -- clock timing can be imprecise - tracking drift strikes a compromise between quickly
   -- adapting to changes in clock rate and making too many updates to the tide_maker metro, 
   -- which has it's own disadvantages
-  if math.abs(drift) < ACCEPTABLE_CLOCK_DRIFT then
-    if force_crow_advance_time_update then
-      force_crow_advance_time_update = false
-      set_advance_time_with_crow_clocks()
+  if math.abs(drift) < ACCEPTABLE_CLOCK_DRIFT_CROW then
+    if force_advance_time_update then
+      set_advance_time_with_external_clocks()
     end
     
     return
@@ -662,25 +816,25 @@ function process_crow_clock(v)
   crow_clock_era_counter = 0
   last_crow_clock_era_began = current_time
   
-  set_advance_time_with_crow_clocks()
+  set_advance_time_with_external_clocks()
 end
 
-function set_advance_time_with_crow_clocks()
-  new_tide_advance_time = clock_delta / crow_clock_multiplier
+function set_advance_time_with_external_clocks()
+  force_advance_time_update = false
+  new_tide_advance_time = clock_delta / external_clock_multiplier
   if new_tide_advance_time < MIN_TIDE_ADVANCE_TIME then
     max_allowable_clock_multiplier = math.floor(clock_delta / MIN_TIDE_ADVANCE_TIME)
     if max_allowable_clock_multiplier >= 1 then
-      crow_clock_multiplier = max_allowable_clock_multiplier
+      external_clock_multiplier = max_allowable_clock_multiplier
     end
     
-    crow_clock_warning_countdown = 50
-    crow_clock_warning_details = {
+    external_clock_warning_countdown = 50
+    external_clock_warning_details = {
       new_tide_advance_time = new_tide_advance_time,
       max_allowable_clock_multiplier = max_allowable_clock_multiplier,
     }
   else
-    crow_clock_warning_countdown = 0
-    
+    external_clock_warning_countdown = math.min(external_clock_warning_countdown, 20)
     force_tide_update_next_tick()
     tide_advance_time = new_tide_advance_time
     update_tide_maker_metro()
@@ -689,8 +843,17 @@ function set_advance_time_with_crow_clocks()
   redraw()
 end
 
+function init_midi_in()
+  force_advance_time_update = false
+  last_midi_clock_received = nil
+  last_midi_clock_era_began = nil
+  midi_clock_era_counter = 0
+  midi_object = midi.connect()
+  midi_object.event = process_midi_input
+end
+
 function init_crow()
-  force_crow_advance_time_update = false
+  force_advance_time_update = false
   last_crow_clock_received = nil
   last_crow_clock_era_began = nil
   crow_clock_era_counter = 0
@@ -727,6 +890,18 @@ function crow_clock_received_recently()
   return (util.time() - last_crow_clock_received) < 3.0
 end
 
+function midi_clock_received_recently()
+  if not last_midi_clock_received then
+    return false
+  end
+  
+  return (util.time() - last_midi_clock_received) < 3.0
+end
+
+function external_clock_received_recently()
+  return crow_clock_received_recently() or midi_clock_received_recently()
+end
+
 function background_metro_tasks()
   update_held_grid_keys()
   update_dispersion_ui()
@@ -736,8 +911,8 @@ function background_metro_tasks()
   sample_rate_warning_expiring = sample_rate_warning_countdown == 1
   sample_rate_warning_countdown = math.max(sample_rate_warning_countdown - 1, 0)
   
-  crow_clock_warning_expiring = crow_clock_warning_countdown == 1
-  crow_clock_warning_countdown = math.max(crow_clock_warning_countdown - 1, 0)
+  external_clock_warning_expiring = external_clock_warning_countdown == 1
+  external_clock_warning_countdown = math.max(external_clock_warning_countdown - 1, 0)
   
   -- if a crow has just recently been connected, we need to manually set its
   -- callbacks. if it has just been disconnected, we should reset our timers
@@ -747,11 +922,14 @@ function background_metro_tasks()
     init_crow()
   end
   
-  -- besides disconnections, if we haven't received clocks from crow for a while,
-  -- we should throw out any old data wewere keeping on them so nothing weird 
-  -- happens if we start getting them again.
+  -- besides disconnections, if we haven't received clocks from crow (or midi) 
+  -- for a while, we should throw out any old data we were keeping on them so
+  -- nothing weird happens if we start getting them again.
   if last_crow_clock_received and not crow_clock_received_recently() then
     init_crow()
+  end
+  if last_midi_clock_received and not midi_clock_received_recently() then
+    init_midi_in()
   end
   
   if advance_time_dirty then
@@ -761,7 +939,7 @@ function background_metro_tasks()
     update_tide_maker_metro()
   end
   
-  if tide_info_overlay_expiring or sample_rate_warning_expiring or crow_clock_warning_expiring then
+  if tide_info_overlay_expiring or sample_rate_warning_expiring or external_clock_warning_expiring then
     redraw()
   end
 end
@@ -912,7 +1090,8 @@ function update_tide_maker_metro()
   
   smoothing_factor = util.clamp(util.round(tide_advance_time * 20), 2, 8)
   smoothing_counter = math.min(smoothing_counter, smoothing_factor - 1)
-  tide_maker:start(tide_advance_time / smoothing_factor)
+  current_tide_delta = tide_advance_time / smoothing_factor
+  tide_maker:start(current_tide_delta)
   advance_time_dirty = false
 end
 
@@ -979,8 +1158,8 @@ function displaying_sample_rate_warning()
   return sample_rate_warning_countdown > 0
 end
 
-function displaying_crow_clock_warning()
-  return crow_clock_warning_countdown > 0
+function displaying_external_clock_warning()
+  return external_clock_warning_countdown > 0
 end
 
 function enc(n, d)
@@ -990,11 +1169,11 @@ function enc(n, d)
     if n == 2 then
       tide_info_overlay_countdown = 10
       
-      if crow_clock_received_recently() then
-        crow_clock_multiplier = util.clamp(crow_clock_multiplier + d, 1, 8)
+      if external_clock_received_recently() then
+        external_clock_multiplier = util.clamp(external_clock_multiplier + d, 1, 8)
         -- rather than updating right away, wait until the next clock tick so that
         -- the metro is synced to the clock signal as well as possible
-        force_crow_advance_time_update = true
+        force_advance_time_update = true
       else
         tide_advance_time = util.round(math.max(tide_advance_time + d * 0.001, MIN_TIDE_ADVANCE_TIME), 0.001)
         advance_time_dirty = true
@@ -1010,38 +1189,45 @@ function enc(n, d)
     end
     
     if n == 3 then
-      option_config = buoy_options()[buoy_editing_option_scroll_index]
-      
-      old_value = buoy_editing_prototype.options[option_config.name]
-      if option_config.option_range then
-        range_min = option_config.option_range[1]
-        range_max = option_config.option_range[2]
-        
-        -- ranges can be defined in terms of other option values, this is useful
-        -- for setting zenith/nadir points
-        if type(range_min) == "string" then
-          range_min = buoy_editing_prototype.options[range_min] + 1
-        end
-        if type(range_max) == "string" then
-          range_max = buoy_editing_prototype.options[range_max] - 1
-        end
-        
-        new_value = util.clamp(old_value + (d * option_config.option_step_value), range_min, range_max)
-      else
-        new_value = util.clamp(old_value + d, 1, #option_config.options)
-      end
-      
-      for x = 1, g.cols do
-        for y = 1, g.rows do
-          if buoys[y][x] and buoys[y][x].being_edited then
-            buoys[y][x]:update_option(option_config.name, new_value)
-          end
-        end
-      end
+      edit_buoys(d)
     end
   end
   
   redraw()
+end
+
+function edit_buoys(d)
+  option_config = buoy_options()[buoy_editing_option_scroll_index]
+  if option_config.name == "OPTION_SPACER" then
+    return
+  end
+  
+  old_value = buoy_editing_prototype.options[option_config.name]
+  if option_config.option_range then
+    range_min = option_config.option_range[1]
+    range_max = option_config.option_range[2]
+    
+    -- ranges can be defined in terms of other option values, this is useful
+    -- for setting zenith/nadir points
+    if type(range_min) == "string" then
+      range_min = buoy_editing_prototype.options[range_min] + 1
+    end
+    if type(range_max) == "string" then
+      range_max = buoy_editing_prototype.options[range_max] - 1
+    end
+    
+    new_value = util.clamp(old_value + (d * option_config.option_step_value), range_min, range_max)
+  else
+    new_value = util.clamp(old_value + d, 1, #option_config.options)
+  end
+  
+  for x = 1, g.cols do
+    for y = 1, g.rows do
+      if buoys[y][x] and buoys[y][x].being_edited then
+        buoys[y][x]:update_option(option_config.name, new_value)
+      end
+    end
+  end
 end
 
 function degree_formatter(tbl)
@@ -1051,8 +1237,17 @@ end
 function smoothly_make_tides()
   if run then
     smoothing_counter = (smoothing_counter + 1) % smoothing_factor
+    -- splitting make_tides() into two parts helps the appearance of
+    -- smoothness by splitting up the most time-intensive steps. 
+    -- we could split it further but currently smoothing_factor 
+    -- bottoms out at 2.
+    if smoothing_counter == util.round(smoothing_factor / 2) then
+      make_tides_part_1()
+    end
+    
     if smoothing_counter == 0 then
-      make_tides()
+      make_tides_part_2()
+
       update_buoy_depths()
     end
     
@@ -1072,9 +1267,12 @@ function update_buoy_depths()
   end
 end
 
-function make_tides()
+function make_tides_part_1()
   old_grid_lighting = deep_copy(new_grid_lighting)
   disperse()
+end
+
+function make_tides_part_2()
   roll_forward()
   update_angle_gaps()
   
@@ -1091,20 +1289,41 @@ function make_tides()
   tide_depths_to_lighting()
 end
 
+function choose_clumping_factor()
+  num_particles = #particles
+  
+  if num_particles > 500 then
+    return 4
+  elseif num_particles > 400 then
+    return 3
+  elseif num_particles > 300 then
+    return 2
+  end
+  
+  return 1
+end
+
 function new_tide(position)
+  -- to avoid overloading the processor when a very high number of particles are
+  -- being produced, start to "clump" particles together to reduce the number of
+  -- calculations needing to be performed later on
+  clumping_factor = choose_clumping_factor()
+  
   for y = 1, g.rows do
     tide_index = ((position - current_angle_gaps[y] - 1) % tide_gap) + 1
     num_new_particles = tide_shape()[tide_index] or 0
     num_new_particles = util.round(num_new_particles * tide_height_multiplier)
-
-    for _ = 1, num_new_particles do
+    
+    while num_new_particles > 0 do
       if not is_piling(1, y) then
         particle = {}
         particle.x_pos = 1
         particle.x_vel = 1.0
         particle.y_pos = y
         particle.y_vel = 0.0
-      
+        particle.clump_size = math.min(num_new_particles, clumping_factor)
+        num_new_particles = num_new_particles - particle.clump_size
+
         table.insert(particles, particle)
       end
     end
@@ -1133,9 +1352,9 @@ function disperse()
   particle_counts = fresh_grid(0)
   for _, particle in ipairs(particles) do
     x, y = particle.x_pos, particle.y_pos
-    particle_counts[y][x] = particle_counts[y][x] + 1
+    particle_counts[y][x] = particle_counts[y][x] + particle.clump_size
   end
-  
+
   for _, particle in ipairs(particles) do
     x, y = particle.x_pos, particle.y_pos
     density = particle_counts[y][x]
@@ -1145,7 +1364,7 @@ function disperse()
       if not is_piling(x + direction.x, y + direction.y) then
         density_diff = density - find_in_grid(x + direction.x, y + direction.y, particle_counts, density)
         
-        if density_diff > 1 and flip_coin(dispersion_factor(), density_diff) then
+        if (density_diff >= (particle.clump_size * 2)) and flip_coin(dispersion_factor(), density_diff) then
           table.insert(narrowed_dispersion_directions, direction)
         end
       end
@@ -1164,8 +1383,8 @@ function disperse()
       particle.x_vel = particle.x_vel + (disperse_direction.x * DISPERSION_VELOCITY_FACTOR * density_diff)
       particle.y_vel = particle.y_vel + (disperse_direction.y * DISPERSION_VELOCITY_FACTOR * density_diff)
 
-      particle_counts[y][x] = particle_counts[y][x] - 1
-      particle_counts[new_y][new_x] = particle_counts[new_y][new_x] + 1
+      particle_counts[y][x] = particle_counts[y][x] - particle.clump_size
+      particle_counts[new_y][new_x] = particle_counts[new_y][new_x] + particle.clump_size
     end
   end
 end
@@ -1188,7 +1407,6 @@ function roll_forward()
         xv_delta = x_vel * COLLISION_DIRECTIONAL_DAMPING * -1
         yv_delta = math.abs(xv_delta) * (1 - COLLISION_OVERALL_DAMPING)
         
-        -- TODO - flip coin probabalistically to favor existing vel direction?
         if flip_coin() then
           yv_delta = yv_delta * -1
         end
@@ -1207,7 +1425,6 @@ function roll_forward()
         yv_delta = y_vel * COLLISION_DIRECTIONAL_DAMPING * -1
         xv_delta = math.abs(yv_delta) * (1 - COLLISION_OVERALL_DAMPING)
         
-        -- TODO - flip coin probabalistically to favor existing vel direction?
         if flip_coin() then
           xv_delta = xv_delta * -1
         end
@@ -1239,9 +1456,9 @@ function velocity_averaging()
   particle_counts = fresh_grid(0)
   for _, particle in ipairs(particles) do
     x, y = particle.x_pos, particle.y_pos
-    x_vel_sums[y][x] = x_vel_sums[y][x] + particle.x_vel
-    y_vel_sums[y][x] = y_vel_sums[y][x] + particle.y_vel
-    particle_counts[y][x] = particle_counts[y][x] + 1
+    x_vel_sums[y][x] = x_vel_sums[y][x] + (particle.x_vel * particle.clump_size)
+    y_vel_sums[y][x] = y_vel_sums[y][x] + (particle.y_vel * particle.clump_size)
+    particle_counts[y][x] = particle_counts[y][x] + particle.clump_size
   end
   
   for _, particle in ipairs(particles) do
@@ -1276,7 +1493,7 @@ function particles_to_tide_depths()
     x, y = particle.x_pos, particle.y_pos
 
     if tide_depths[y][x] < params:get("max_depth") then
-      tide_depths[y][x] = tide_depths[y][x] + 1
+      tide_depths[y][x] = tide_depths[y][x] + particle.clump_size
       table.insert(new_particles, particle)
     else
       -- discard excess particles
@@ -1352,8 +1569,8 @@ function redraw()
     redraw_tide_info_overlay()
   elseif displaying_sample_rate_warning() then
     redraw_sample_rate_warning()
-  elseif displaying_crow_clock_warning() then
-    redraw_crow_clock_warning()
+  elseif displaying_external_clock_warning() then
+    redraw_external_clock_warning()
   else
     redraw_regular_screen()
   end
@@ -1374,7 +1591,32 @@ function redraw_meta_mode_screen()
   end
 end
 
-function redraw_crow_clock_warning()
+function redraw_external_clock_warning()
+  if crow_clock_received_recently() then
+    first_line = "crow clock received too fast"
+  else
+    first_line = "midi clock received too fast"
+  end
+    
+  if external_clock_warning_details.max_allowable_clock_multiplier >= 1 then
+    second_line = "for current clock multiplier"
+    third_line = "multiplier shifted to "..external_clock_warning_details.max_allowable_clock_multiplier
+  else
+    second_line = "tide advance time would be"
+    third_line = util.round(external_clock_warning_details.new_tide_advance_time, 0.001)..", min is ".. MIN_TIDE_ADVANCE_TIME
+  end
+  
+  redraw_warning_screen(first_line, second_line, third_line)
+end
+
+function redraw_sample_rate_warning()
+  first_line = "non-48k sound files loaded"
+  second_line = "these sounds can be used"
+  third_line = "but will sound affected"
+  redraw_warning_screen(first_line, second_line, third_line)
+end
+
+function redraw_warning_screen(first_line, second_line, third_line)
   screen.font_face(7)
   screen.font_size(20)
   
@@ -1383,47 +1625,21 @@ function redraw_crow_clock_warning()
   
   screen.font_face(1)
   screen.font_size(8)
-    
-  if crow_clock_warning_details.max_allowable_clock_multiplier >= 1 then
-    second_line = "for current clock multiplier"
-    third_line = "multiplier shifted to "..crow_clock_warning_details.max_allowable_clock_multiplier
-  else
-    second_line = "tide advance time would be"
-    third_line = util.round(crow_clock_warning_details.new_tide_advance_time, 0.001)..", min is ".. MIN_TIDE_ADVANCE_TIME
-  end
   
   screen.move(64, 35)
-  screen.text_center("crow clock received too fast")
+  screen.text_center(first_line)
   screen.move(64, 50)
   screen.text_center(second_line)
   screen.move(64, 60)
   screen.text_center(third_line)
 end
 
-function redraw_sample_rate_warning()
-  screen.font_face(7)
-  screen.font_size(20)
-  
-  screen.move(64, 20)
-  screen.text_center("WARNING")
-  
-  screen.font_face(1)
-  screen.font_size(8)
-  
-  screen.move(64, 35)
-  screen.text_center("non-48k sound files loaded")
-  screen.move(64, 50)
-  screen.text_center("these sounds can be used")
-  screen.move(64, 60)
-  screen.text_center("but will sound affected")
-end
-
 function redraw_tide_info_overlay()
-  using_crow_clock = crow_clock_received_recently()
+  using_external_clock = external_clock_received_recently()
   screen.move(0, 30)
-  screen.text(using_crow_clock and "crow clock multiplier" or "tide advance time")
+  screen.text(using_external_clock and "external clock multiplier" or "tide advance time")
   screen.move(128, 30)
-  screen.text_right(using_crow_clock and crow_clock_multiplier or tide_advance_time)
+  screen.text_right(using_external_clock and external_clock_multiplier or tide_advance_time)
   
   screen.move(0, 40)
   screen.text("tide gap")
@@ -1442,19 +1658,21 @@ function redraw_edit_buoy_screen()
     end
     
     screen.move(0, height)
-    screen.text(option_config.name)
-    
-    buoy_value = buoy_editing_prototype.options[option_config.name]
-    screen.move(128, height)
-
-    if option_config.formatter then
-      option_value_text = option_config.formatter(buoy_value)
-    elseif option_config.options then
-      option_value_text = option_config.options[buoy_value]
-    else
-      option_value_text = tostring(buoy_value)
+    if option_config.name ~= "OPTION_SPACER" then
+      screen.text(option_config.name)
+      
+      buoy_value = buoy_editing_prototype.options[option_config.name]
+      screen.move(128, height)
+  
+      if option_config.formatter then
+        option_value_text = option_config.formatter(buoy_value)
+      elseif option_config.options then
+        option_value_text = option_config.options[buoy_value]
+      else
+        option_value_text = tostring(buoy_value)
+      end
+      screen.text_right(option_value_text)
     end
-    screen.text_right(option_value_text)
     
     height = height + 10
   end
@@ -1719,31 +1937,42 @@ function Buoy:update_depth(new_depth)
   self:update_panning()
   self:update_filtering()
   self:update_crow()
+  self:update_midi_cc_output()
   
-  -- TODONOW - this is resetting even when it's already playing -- we should
-  ---- leave that to the reset threshold
-  -- TODONOW - what if the play threshold is at "none", then how should we proceed?
   if self:newly_exceeds_play_threshold() then
-    self:grab_softcut_buffer()
-    -- if there are a lot of active uninterruptible buffers
-    -- it's possible we might not be able to grab one
-    if not self:has_softcut_buffer() then
-      return
-    end
-    self:setup_softcut_params()
-    self.active_start_time = util.time()
-    softcut.play(self.softcut_buffer, 1)
+    self:start_playing()
   end
   
   if self:newly_exceeds_reset_threshold() then
-    if not self:has_softcut_buffer() then
-      return
-    end
-    
-    -- update_sound will reset playhead position
-    self:update_sound()
-    self.active_start_time = util.time()
+    self:reset_playhead()
   end
+end
+
+function Buoy:reset_playhead()
+  if not self:has_softcut_buffer() then
+    return
+  end
+  
+  -- update_sound will reset playhead position
+  self:update_sound()
+  self.active_start_time = util.time()
+end
+
+function Buoy:start_playing()
+  if self:has_softcut_buffer() then
+    return 
+  end
+  
+  self:grab_softcut_buffer()
+  -- if there are a lot of active uninterruptible buffers
+  -- it's possible we might not be able to grab one
+  if not self:has_softcut_buffer() then
+    return
+  end
+  
+  self:setup_softcut_params()
+  self.active_start_time = util.time()
+  softcut.play(self.softcut_buffer, 1)
 end
 
 function Buoy:setup_softcut_params()
@@ -1885,7 +2114,49 @@ function Buoy:update_option(name, value)
     self:update_filter_q()
   elseif name == "Q nadir point" then
     self:update_filter_q()
+  elseif name == "midi output" then
+    self:update_midi_output_index()
+  elseif name == "zenith CC value" then
+    self:update_midi_cc_output()
+  elseif name == "nadir CC value" then
+    self:update_midi_cc_output()
+  elseif name == "midi CC zenith point" then
+    self:update_midi_cc_output()
+  elseif name == "midi CC nadir point" then
+    self:update_midi_cc_output()
+  elseif name == "crow output mode" then
+    self:update_crow()
+  elseif name == "zenith crow voltage" then
+    self:update_crow()
+  elseif name == "nadir crow voltage" then
+    self:update_crow()
+  elseif name == "crow voltage slew" then
+    self:update_crow()
+  elseif name == "crow zenith point" then
+    self:update_crow()
+  elseif name == "crow nadir point" then
+    self:update_crow()
+  elseif name == "crow t/g threshold" then
+    self:update_crow()
   end
+end
+
+function Buoy:update_midi_cc_output()
+  if not self.midi_out_device then
+    return
+  end
+  
+  ncc = self.options["nadir CC value"]
+  zcc = self.options["zenith CC value"]
+  new_cc = util.round(ncc + ((zcc - ncc) * self:tide_ratio("midi CC")))
+  
+  midi_channel = self.options["midi out channel"]
+  cc_num = self.options["midi out CC number"]
+  self.midi_out_device:cc(cc_num, new_cc, midi_channel)
+end
+
+function Buoy:update_midi_output_index()
+  self.midi_out_device = midi.connect(self.options["midi output"])
 end
 
 function Buoy:update_sound()
@@ -1896,6 +2167,7 @@ function Buoy:update_sound()
   details = self:sound_details()
   if not details then
     self:release_softcut_buffer()
+    self.options["sound"] = 0
     return
   end
 
