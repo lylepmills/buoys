@@ -1,26 +1,19 @@
--- pilings_v14.lua
--- arc params + animations
+-- pilings_v15.lua
+-- fix smoothing, fix pressing more buttons after already editing buoys
 
 -- TODO LIST
--- more tide shapes
 -- use local variables
 -- tune defaults
 ---- especially collisions
--- arc control? (common params, configurable?)
----- wave speed, wave height, wave interval, filter cutoff?
--- randomize waves somewhat?
--- waveshapes with initial Y differences?
+---- wave speed, wave interval, filter cutoff?
 ---- more wave shaping control, attack/decay type thing?
--- threshold option for sounding on last row (must be > min)?
 -- allow diagonal movement (option)?
 ---- POTENTIAL_DISPERSION_DIRECTIONS?
 ---- also roll_forward()?
 -- do something about disappearing density when you hit a wall?
--- excessive density could lead to faster speeds, much like IRL
+---- excessive density could lead to faster speeds, much like IRL
 ---- optional overflow mode?
 -- could dispersion look better if it were more concentric instead of UDLR?
--- wave designer page?
----- hold both buttons to enter?
 -- smoothing could/should be proportional to advance time
 -- midi CC outputs? midi sync?
 
@@ -28,19 +21,11 @@
 ---- wave speed
 ---- wave gap
 
--- arc params
----- wave height
----- wave shape
----- wave angle
----- wave dispersion
-
 RUN = true
 
 DISPERSION_MULTIPLE = 0.001
 
--- TIDE_GAP = 0
 TIDE_GAP = 25
-TIDE_HEIGHT = 5
 -- sinces waves move from left to right, they 
 -- will appear flipped vs these definitions
 BASE_TIDE_SHAPES = {
@@ -53,7 +38,6 @@ BASE_TIDE_SHAPES = {
   {15, 0, 0, 15, 0, 0, 15, 0},
   {8, 8, 8, 8, 8, 8, 8, 8},
 }
-TIDE_SHAPE_INDEX = 1
 COLLISION_OVERALL_DAMPING = 0.2
 COLLISION_DIRECTIONAL_DAMPING = 0.5
 VELOCITY_AVERAGING_FACTOR = 0.6
@@ -61,8 +45,9 @@ DISPERSION_VELOCITY_FACTOR = 0.1
 LONG_PRESS_TIME = 1.0
 BACKGROUND_METRO_TIME = 0.1
 POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
+SMOOTHING_FACTOR = 4
 
--- TODO - could these be tied to the rate at which waves are moving?
+-- TODO - could these be tied to the rate at which waves are moving? ("auto" option)
 RATE_SLEW = 0.1
 LEVEL_SLEW = 0.2
 -- AUDIO_FILE = _path.dust.."audio/tehn/mancini1.wav"
@@ -80,10 +65,14 @@ function offset_formatter(value)
 end
 
 BUOY_OPTIONS = {
+  -- TODO
+  -- attack/decay (auto vs controlled)
+  -- thresholds (hysteresis?)
   -- sample
   -- looping?
   -- uninterruptible?
   -- depth envelope response
+  ---- filter?
   ---- min threshold
   ---- min/max values
   ---- volume
@@ -127,7 +116,7 @@ function init()
   displaying_buoys = false
   buoy_editing_option_scroll_index = 1
   -- tide_shape_index can be fractional, indicating interpolation between shapes
-  tide_shape_index = TIDE_SHAPE_INDEX
+  tide_shape_index = 1
   tide_shapes = BASE_TIDE_SHAPES
 
   old_grid_lighting = fresh_grid(params:get("min_bright"))
@@ -147,7 +136,7 @@ function init()
   init_softcut()
   
   if RUN then
-    tide_maker = metro.init(smoothly_make_tides, params:get("advance_time") / params:get("smoothing"))
+    tide_maker = metro.init(smoothly_make_tides, params:get("advance_time") / SMOOTHING_FACTOR)
     tide_maker:start()
     background_metro = metro.init(background_metro_tasks, BACKGROUND_METRO_TIME)
     background_metro:start()
@@ -175,15 +164,14 @@ function init_params()
   params:add_separator()
   params:add{ type = "number", id = "angle", name = "wave angle", min = -60, max = 60, default = 0, formatter = degree_formatter }
   -- TODO = rename to wave speed
-  cs_advance_time = controlspec.new(0.05, 1.0, "lin", 0, 0.2, "seconds")
+  cs_advance_time = controlspec.new(0.1, 1.0, "lin", 0, 0.2, "seconds")
   params:add{ type = "control", id = "advance_time", name = "advance time", controlspec = cs_advance_time, action = update_advance_time }
   params:add_separator()
   params:add{ type = "number", id = "dispersion", name = "dispersion", min = 0, max = 25, default = 10 }
   params:add_separator()
   params:add{ type = "number", id = "min_bright", name = "min brightness", min = 1, max = 3, default = 1 }
   params:add{ type = "number", id = "max_bright", name = "max brightness", min = 10, max = 15, default = 15 }
-  -- TODO - smoothing should just be on/off, and it should not affect the perceived scroll speed
-  params:add{ type = "number", id = "smoothing", name = "smoothing", min = 3, max = 6, default = 4 }
+  params:add{ type = "option", id = "smoothing", name = "visual smoothing", options = { "on", "off" } }
 end
 
 function init_softcut()
@@ -234,29 +222,42 @@ function background_metro_tasks()
   update_dispersion_ui()
 end
 
+function mark_buoy_being_edited(x, y)
+  buoys[y][x] = buoys[y][x] or Buoy:new()
+  buoys[y][x].being_edited = true
+  buoys[y][x].active = true
+end
+
 function update_held_grid_keys()
   held_grid_keys_counter = held_grid_keys_counter + 1
   keys_held = grid_keys_held()
   newly_editing_buoys = false
+  clear_grid = false
   
   for _, key_held in pairs(keys_held) do
     x, y = key_held[1], key_held[2]
-    -- TODO - should only increment counters if we're not already editing buoys
-    held_grid_keys[y][x] = held_grid_keys[y][x] + 1
-    if held_grid_keys[y][x] > (LONG_PRESS_TIME / BACKGROUND_METRO_TIME) then
-      newly_editing_buoys = true
-      longest_held_key = {x, y}
-      held_grid_keys = fresh_grid(0)
-      break
+    if editing_buoys() then
+      mark_buoy_being_edited(x, y)
+      clear_grid = true
+    else  
+      held_grid_keys[y][x] = held_grid_keys[y][x] + 1
+      if held_grid_keys[y][x] > (LONG_PRESS_TIME / BACKGROUND_METRO_TIME) then
+        newly_editing_buoys = true
+        longest_held_key = {x, y}
+        clear_grid = true
+        break
+      end
     end
+  end
+  
+  if clear_grid then
+    held_grid_keys = fresh_grid(0)
   end
   
   if newly_editing_buoys then
     for _, key_held in pairs(keys_held) do
       x, y = key_held[1], key_held[2]
-      buoys[y][x] = buoys[y][x] or Buoy:new()
-      buoys[y][x].being_edited = true
-      buoys[y][x].active = true
+      mark_buoy_being_edited(x, y)
     end
     
     buoy_editing_prototype = buoys[longest_held_key[2]][longest_held_key[1]]
@@ -305,7 +306,7 @@ function grid_keys_held()
 end
 
 function update_advance_time()
-  tide_maker:start(params:get("advance_time") / params:get("smoothing"))
+  tide_maker:start(params:get("advance_time") / SMOOTHING_FACTOR)
 end
 
 function key(n, z)
@@ -329,6 +330,7 @@ end
 function enc(n, d)
   if editing_buoys() then
     if n == 2 then
+      -- TODO - this scrolls too fast
       buoy_editing_option_scroll_index = util.clamp(buoy_editing_option_scroll_index + d, 1, #BUOY_OPTIONS)
     end
     
@@ -360,13 +362,15 @@ end
 
 function smoothly_make_tides()
   if run then
-    smoothing_counter = (smoothing_counter + 1) % params:get("smoothing")
+    smoothing_counter = (smoothing_counter + 1) % SMOOTHING_FACTOR
     if smoothing_counter == 0 then
       make_tides()
       update_buoy_depths()
     end
     
-    redraw_lights()
+    if params:get("smoothing") == 1 or smoothing_counter == 0 then
+      redraw_lights()
+    end
   end
 end
 
@@ -749,8 +753,12 @@ function redraw_arc_lights()
   a:refresh()
 end
 
+function edited_shape_index()
+  math.floor(tide_shape_index + 0.5)
+end
+
 function redraw_grid_lights_tide_shape_editor()
-  current_index = math.floor(tide_shape_index)
+  current_index = edited_shape_index()
   current_shape = tide_shapes[current_index]
   
   for y = 1, g.rows do
@@ -760,7 +768,6 @@ function redraw_grid_lights_tide_shape_editor()
 
   for x = 2, g.cols do
     for y = 1, g.rows do
-      -- if y = 3, show the light iff brightness is >=14, etc
       brightness = (x + current_shape[y]) >= 17 and 8 or 0
       g:led(x, y, brightness)
     end
@@ -769,7 +776,7 @@ function redraw_grid_lights_tide_shape_editor()
 end
 
 function redraw_grid_lights_main_view()
-  grid_lighting = grid_transition(smoothing_counter / params:get("smoothing"))
+  grid_lighting = grid_transition(smoothing_counter / SMOOTHING_FACTOR)
   
   for x = 1, g.cols do
     for y = 1, g.rows do
@@ -948,7 +955,7 @@ g.key = function(x, y, z)
       if x == 1 then
         tide_shape_index = y
       else
-        shape_being_edited = tide_shapes[math.floor(tide_shape_index)]
+        shape_being_edited = tide_shapes[edited_shape_index()]
         old_tide_depth = shape_being_edited[y]
         new_tide_depth = 17 - x
         shape_being_edited[y] = old_tide_depth == new_tide_depth and 0 or new_tide_depth
