@@ -1,8 +1,11 @@
 -- pilings
--- added pausing (button 3)
--- began adding parameters
+-- wave drawing on screen
 
 RUN = true
+SHOW_GRID = true
+
+SCREEN_MODE = 'waves'
+-- SCREEN_MODE = 'pilings'
 
 DISPERSION_MULTIPLE = 0.001
 
@@ -10,6 +13,7 @@ TIDE_GAP = 25
 TIDE_HEIGHT = 5
 -- shape is defined right to left
 TIDE_SHAPE = {1, 3, 6, 10, 9, 8, 6, 4, 1}
+-- TIDE_SHAPE = {6, 3, 2}
 COLLISION_OVERALL_DAMPING = 0.2
 COLLISION_DIRECTIONAL_DAMPING = 0.5
 VELOCITY_AVERAGING_FACTOR = 0.6
@@ -31,12 +35,6 @@ function init()
   params:add{ type = "number", id = "min_bright", name = "min brightness", min = 1, max = 3, default = 2 }
   params:add{ type = "number", id = "max_bright", name = "max brightness", min = 10, max = 15, default = 15 }
   params:add{ type = "number", id = "smoothing", name = "smoothing", min = 3, max = 6, default = 4 }
-  
-  -- params:add{type = "number", id = "midi_device", name = "MIDI Device", min = 1, max = 4, default = 1, action = function(value)
-  --   midi_in_device.event = nil
-  --   midi_in_device = midi.connect(value)
-  --   midi_in_device.event = midi_event
-  -- end}
 
   pilings = fresh_grid()
   particles = {}
@@ -344,6 +342,16 @@ function redraw_screen()
     screen.fill()
   end
   
+  if SCREEN_MODE == 'pilings' then
+    redraw_screen_pilings_only()
+  elseif SCREEN_MODE == 'waves' then
+    redraw_screen_with_waves()
+  end
+  
+  screen.update()
+end
+
+function redraw_screen_pilings_only()
   screen.level(15)
   for x = 1, g.cols do
     for y = 1, g.rows do
@@ -353,20 +361,72 @@ function redraw_screen()
       end
     end
   end
+end
+
+function redraw_screen_with_waves()
+  particle_counts = fresh_grid()
+  for _, particle in ipairs(particles) do
+    x, y = particle.x_pos, particle.y_pos
+    particle_counts[y][x] = particle_counts[y][x] + 1
+  end
   
-  screen.update()
+  for x = 1, 33 do
+    for y = 1, 17 do
+      density = 0
+      
+      if x % 2 == 0 and y % 2 == 0 then
+        density = find_in_grid(x / 2, y / 2, particle_counts, 0)
+      end
+      
+      if x % 2 == 0 and y % 2 == 1 then
+        density_below = find_in_grid(x / 2, (y + 1) / 2, particle_counts, 0)
+        density_above = find_in_grid(x / 2, (y - 1) / 2, particle_counts, 0)
+        density = round((density_below + density_above) / 2)
+      end
+      
+      if x % 2 == 1 and y % 2 == 0 then
+        density_left = find_in_grid((x - 1) / 2, y / 2, particle_counts, 0)
+        density_right = find_in_grid((x + 1) / 2, y / 2, particle_counts, 0)
+        density = round((density_left + density_right) / 2)
+      end
+      
+      if x % 2 == 1 and y % 2 == 1 then
+        density_above_left = find_in_grid((x - 1) / 2, (y - 1) / 2, particle_counts, 0)
+        density_above_right = find_in_grid((x + 1) / 2, (y - 1) / 2, particle_counts, 0)
+        density_below_left = find_in_grid((x - 1) / 2, (y + 1) / 2, particle_counts, 0)
+        density_below_right = find_in_grid((x + 1) / 2, (y + 1) / 2, particle_counts, 0)
+        density = round((density_above_left + density_above_right + density_below_left + density_below_right) / 4)
+      end
+      
+      screen.level(density)
+      screen.rect((x * 4) - 6, (y * 4) - 6, 4, 4)
+      screen.fill()
+    end
+  end
+  
+  screen.level(15)
+  for x = 1, g.cols do
+    for y = 1, g.rows do
+      if is_piling(x, y) then
+        screen.circle(x * 8 - 4, y * 8 - 4, 3.4)
+        screen.stroke()
+      end
+    end
+  end
 end
 
 function redraw_lights()
-  grid_lighting = grid_transition(smoothing_counter / params:get("smoothing"))
-  
-  for x = 1, g.cols do
-    for y = 1, g.rows do
-      brightness = is_piling(x, y) and 0 or grid_lighting[y][x]
-      g:led(x, y, brightness)
+  if SHOW_GRID then
+    grid_lighting = grid_transition(smoothing_counter / params:get("smoothing"))
+    
+    for x = 1, g.cols do
+      for y = 1, g.rows do
+        brightness = is_piling(x, y) and 0 or grid_lighting[y][x]
+        g:led(x, y, brightness)
+      end
     end
+    g:refresh()
   end
-  g:refresh()
 end
 
 function fresh_grid(b)
