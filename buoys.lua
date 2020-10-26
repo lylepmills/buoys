@@ -1,5 +1,5 @@
--- pilings_v12.lua
--- more wave shapes + wave interpolation
+-- pilings_v13.lua
+-- wave shape editing view
 
 -- TODO LIST
 -- more tide shapes
@@ -32,15 +32,16 @@
 ---- wave height
 ---- wave shape
 ---- wave angle
+---- wave dispersion
 
 RUN = true
-SHOW_GRID = true
 
 DISPERSION_MULTIPLE = 0.001
 
 TIDE_GAP = 25
 TIDE_HEIGHT = 5
--- sinces waves move from left to right, they will appear flipped vs these definitions
+-- sinces waves move from left to right, they 
+-- will appear flipped vs these definitions
 BASE_TIDE_SHAPES = {
   {4, 9, 15, 13, 11, 9, 6, 2},
   {3, 6, 9, 12, 15, 0, 0, 0},
@@ -134,6 +135,8 @@ function init()
   tide_interval_counter = 0
   smoothing_counter = 0
   held_grid_keys_counter = 0
+  key_states = {0, 0, 0}
+  was_editing_tides = false
 
   init_softcut()
   
@@ -263,6 +266,10 @@ function editing_buoys()
   return false
 end
 
+function editing_tide_shapes()
+  return key_states[2] == 1 and key_states[3] == 1
+end
+
 function grid_keys_held()
   result = {}
   for x = 1, g.cols do
@@ -281,8 +288,14 @@ function update_advance_time()
 end
 
 function key(n, z)
-  if n == 3 and z == 1 then
+  key_states[n] = z
+  
+  if n == 3 and z == 0 and not was_editing_tides then
     run = not run
+  end
+  
+  if key_states[2] == 0 and key_states[3] == 0 then
+    was_editing_tides = false
   end
   
   if n == 2 then
@@ -667,20 +680,46 @@ function redraw_flume_edges()
 end
 
 function redraw_lights()
-  if SHOW_GRID then
-    grid_lighting = grid_transition(smoothing_counter / params:get("smoothing"))
-    
-    for x = 1, g.cols do
-      for y = 1, g.rows do
-        brightness = is_piling(x, y) and 0 or grid_lighting[y][x]
-        if displaying_buoys and buoys[y][x] and buoys[y][x].active then
-          brightness = 15
-        end
-        g:led(x, y, brightness)
-      end
-    end
-    g:refresh()
+  if editing_tide_shapes() then
+    was_editing_tides = true
+    redraw_lights_tide_shape_editor()
+  else
+    redraw_lights_main_view()
   end
+end
+
+function redraw_lights_tide_shape_editor()
+  current_index = math.floor(tide_shape_index)
+  current_shape = tide_shapes[current_index]
+  
+  for y = 1, g.rows do
+    brightness = y == current_index and 15 or 0
+    g:led(1, y, brightness)
+  end
+
+  for x = 2, g.cols do
+    for y = 1, g.rows do
+      -- if y = 3, show the light iff brightness is >=14, etc
+      brightness = (x + current_shape[y]) >= 17 and 8 or 0
+      g:led(x, y, brightness)
+    end
+  end
+  g:refresh()
+end
+
+function redraw_lights_main_view()
+  grid_lighting = grid_transition(smoothing_counter / params:get("smoothing"))
+  
+  for x = 1, g.cols do
+    for y = 1, g.rows do
+      brightness = is_piling(x, y) and 0 or grid_lighting[y][x]
+      if displaying_buoys and buoys[y][x] and buoys[y][x].active then
+        brightness = 15
+      end
+      g:led(x, y, brightness)
+    end
+  end
+  g:refresh()
 end
 
 function max_depth()
@@ -843,23 +882,36 @@ end
 -- grid
 
 g.key = function(x, y, z)
-  if z == 0 then
-    if buoys[y][x] and (buoys[y][x].being_edited or buoys[y][x].active) then
-      if buoys[y][x].being_edited then
-        buoys[y][x].being_edited = false
-      elseif buoys[y][x].active then
-        buoys[y][x].active = false
+  if editing_tide_shapes() then
+    if z == 1 then
+      if x == 1 then
+        tide_shape_index = y
+      else
+        shape_being_edited = tide_shapes[math.floor(tide_shape_index)]
+        old_tide_depth = shape_being_edited[y]
+        new_tide_depth = 17 - x
+        shape_being_edited[y] = old_tide_depth == new_tide_depth and 0 or new_tide_depth
       end
-    else
-      pilings[y][x] = is_piling(x, y) and 0 or 1
-      clear_particles(x, y)
+    end
+  else
+    if z == 0 then
+      if buoys[y][x] and (buoys[y][x].being_edited or buoys[y][x].active) then
+        if buoys[y][x].being_edited then
+          buoys[y][x].being_edited = false
+        elseif buoys[y][x].active then
+          buoys[y][x].active = false
+        end
+      else
+        pilings[y][x] = is_piling(x, y) and 0 or 1
+        clear_particles(x, y)
+      end
+      
+      held_grid_keys[y][x] = 0
     end
     
-    held_grid_keys[y][x] = 0
-  end
-  
-  if z == 1 then
-    held_grid_keys[y][x] = 1
+    if z == 1 then
+      held_grid_keys[y][x] = 1
+    end
   end
   
   redraw_lights()
