@@ -1,12 +1,11 @@
--- pilings_v11.lua
--- rate options work
+-- pilings_v12.lua
+-- more wave shapes + wave interpolation
 
 -- TODO LIST
 -- more tide shapes
 -- use local variables
 -- tune defaults
 ---- especially collisions
--- sound
 -- arc control? (common params, configurable?)
 ---- wave speed, wave height, wave interval, filter cutoff?
 -- randomize waves somewhat?
@@ -25,6 +24,15 @@
 -- smoothing could/should be proportional to advance time
 -- midi CC outputs? midi sync?
 
+-- encoder params
+---- wave speed
+---- wave gap
+
+-- arc params
+---- wave height
+---- wave shape
+---- wave angle
+
 RUN = true
 SHOW_GRID = true
 
@@ -32,9 +40,18 @@ DISPERSION_MULTIPLE = 0.001
 
 TIDE_GAP = 25
 TIDE_HEIGHT = 5
--- shape is defined right to left
-TIDE_SHAPE = {1, 3, 6, 10, 9, 8, 6, 4, 1}
--- TIDE_SHAPE = {6, 3, 2}
+-- sinces waves move from left to right, they will appear flipped vs these definitions
+BASE_TIDE_SHAPES = {
+  {4, 9, 15, 13, 11, 9, 6, 2},
+  {3, 6, 9, 12, 15, 0, 0, 0},
+  {5, 10, 15, 10, 5, 0, 0, 0},
+  {15, 12, 9, 6, 3, 0, 0, 0},
+  {15, 10, 5, 0, 0, 0, 0, 0},
+  {15, 0, 0, 0, 0, 0, 0, 0},
+  {15, 0, 0, 15, 0, 0, 15, 0},
+  {8, 8, 8, 8, 8, 8, 8, 8},
+}
+TIDE_SHAPE_INDEX = 1
 COLLISION_OVERALL_DAMPING = 0.2
 COLLISION_DIRECTIONAL_DAMPING = 0.5
 VELOCITY_AVERAGING_FACTOR = 0.6
@@ -107,6 +124,9 @@ function init()
   run = true
   displaying_buoys = false
   buoy_editing_option_scroll_index = 1
+  -- tide_shape_index can be fractional, indicating interpolation between shapes
+  tide_shape_index = TIDE_SHAPE_INDEX
+  tide_shapes = BASE_TIDE_SHAPES
 
   old_grid_lighting = fresh_grid(params:get("min_bright"))
   new_grid_lighting = fresh_grid(params:get("min_bright"))
@@ -123,6 +143,20 @@ function init()
     held_grid_keys_tracker = metro.init(update_held_grid_keys, GRID_KEY_PRESS_METRO_TIME)
     held_grid_keys_tracker:start()
   end
+end
+
+function tide_shape()
+  result = {}
+  first_shape_index, interpolation_fraction = math.modf(tide_shape_index)
+  second_shape_index = first_shape_index == #tide_shapes and 1 or first_shape_index + 1
+  first_shape = tide_shapes[first_shape_index]
+  second_shape = tide_shapes[second_shape_index]
+
+  for i = 1, 8 do
+    result[i] = math.floor(first_shape[i] * (1 - interpolation_fraction) + second_shape[i] * interpolation_fraction + 0.5)
+  end
+  
+  return result
 end
 
 function init_params()
@@ -217,8 +251,6 @@ function update_held_grid_keys()
   end
 end
 
--- TODO - this gets called relatively often, maybe would be faster not to go through all of
--- them every time
 function editing_buoys()
   for x = 1, g.cols do
     for y = 1, g.rows do
@@ -323,12 +355,12 @@ function make_tides()
   roll_forward()
   
   -- TODO - should this just use TIDE_GAP so you can set lower gaps than shape size?
-  tide_interval_counter = (tide_interval_counter % (TIDE_GAP + #TIDE_SHAPE)) + 1
+  tide_interval_counter = (tide_interval_counter % (TIDE_GAP + 8)) + 1
   if tide_interval_counter == 1 then
     current_angle_gaps = angle_gaps()
   end
   
-  total_tide_width = #TIDE_SHAPE + math.max(table.unpack(current_angle_gaps))
+  total_tide_width = 8 + math.max(table.unpack(current_angle_gaps))
   if tide_interval_counter <= total_tide_width then
     new_tide(tide_interval_counter)
   end
@@ -339,7 +371,7 @@ end
 
 function new_tide(position)
   for y = 1, g.rows do
-    num_new_particles = TIDE_SHAPE[position - current_angle_gaps[y]] or 0
+    num_new_particles = tide_shape()[position - current_angle_gaps[y]] or 0
     
     for _ = 1, num_new_particles do
       if not is_piling(1, y) then
@@ -431,8 +463,6 @@ function roll_forward()
       -- x collision
       if is_piling(x + x_delta, y) then
         x_delta = 0
-        -- TODO - handle backwards momentum?
-        -- currently no way for a particle to actually change direction
         xv_delta = x_vel * COLLISION_DIRECTIONAL_DAMPING * -1
         yv_delta = math.abs(xv_delta) * (1 - COLLISION_OVERALL_DAMPING)
         
