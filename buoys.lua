@@ -1,5 +1,6 @@
--- pilings_v22.lua
--- sound loading menu 
+-- pilings_v23.lua
+-- sound switching works
+-- interruptability fully supported
 
 -- TODO LIST
 -- use local variables
@@ -16,22 +17,24 @@
 -- some kind of estimation to make it faster when there are a lot of particles?
 -- use E1 as a macro control?
 -- wave sequencing?
--- sample loading
 -- if wave depth can affect playhead position, that could be used for granular stuff
 -- in addition to height, you could have wave velocity play a role in sound parameters
 ---- or simpler version, just have the sample start playing backward when the net velocity is backward
--- max depth should really be 14 not 15...
 -- figure out how we're going to do slews - will they sound right for things like filtering?
 -- midi CC outputs, midi sync. midi note outputs - how would that work with velocity and such?
 -- crow support
 ---- 4 cv outs (could also have triggers for crossing thresholds)
 ---- 1 clock in, 1 assignable CV param?
 -- use util methods where possible
----- many places we use math.floor we could use util.round
+-- use controlspecs more?
 -- meta mode
----- sample loading
----- global state saving/loading?
----- 3 voice stereo mode? variable?
+---- global state saving/loading
+-- 3 voice stereo mode? variable?
+-- check display logic for buoys in terms of both grid lights and norns display, seems to be some inconsistencies
+
+-- IDEAS FOR LATER VERSIONS
+-- 1. maybe high/low tide volume ranges should extend beyond [0.0, 1.0]
+--    so that you could e.g. have volume max out before reaching absolute max depth?
 
 -- ACKNOWLEDGEMENTS
 -- I borrowed some file/folder loading logic from Timber Player, thanks @markeats.
@@ -68,7 +71,7 @@ BACKGROUND_METRO_TIME = 0.1
 POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
 SMOOTHING_FACTOR = 4
 META_MODE_KEYS = { { x=1, y=1 }, { x=1, y=8 }, { x=16, y=1 }, { x=16, y=8 } }
-META_MODE_OPTIONS = { "choose sample folder", "save state", "load state", "exit" }
+META_MODE_OPTIONS = { "choose sample folder", "clear inactive buoys", "save state", "load state", "exit" }
 
 -- TODO - could these be tied to the rate at which waves are moving? ("auto" option)
 RATE_SLEW = 0.1
@@ -230,8 +233,6 @@ buoy_options = {
     option_step_value = 1,
     formatter = offset_formatter,
   },
-  -- TODO - maybe high/low tide volume ranges should extend beyond [0.0, 1.0]
-  -- so that you could e.g. have volume max out before reaching absolute max depth?
   {
     name = "high tide volume",
     default_value = 1.0,
@@ -244,7 +245,7 @@ buoy_options = {
     option_range = {0.0, 1.0},
     option_step_value = 0.01,
   },
-  -- TODO - separate play/reset thresholds?
+  -- TODO - separate play/reset thresholds for looping stuff?
   {
     name = "reset threshold",
     default_value = 1,
@@ -313,7 +314,7 @@ function tide_shape()
   second_shape = tide_shapes[second_shape_index]
 
   for i = 1, 8 do
-    result[i] = math.floor(first_shape[i] * (1 - interpolation_fraction) + second_shape[i] * interpolation_fraction + 0.5)
+    result[i] = util.round(first_shape[i] * (1 - interpolation_fraction) + second_shape[i] * interpolation_fraction)
   end
   
   return result
@@ -500,6 +501,16 @@ function update_advance_time()
   tide_maker:start(tide_advance_time / SMOOTHING_FACTOR)
 end
 
+function clear_inactive_buoys()
+  for x = 1, g.cols do
+    for y = 1, g.rows do
+      if buoys[y][x] and (not buoys[y][x].active) then
+        buoys[y][x] = nil
+      end
+    end
+  end
+end
+
 function key(n, z)
   key_states[n] = z
   if meta_mode then
@@ -512,8 +523,10 @@ function key(n, z)
     if meta_mode_option == "choose sample folder" then
       file_select_active = true
       fileselect.enter(_path.audio, file_select_finished_callback)
+    elseif meta_mode_option == "clear inactive buoys" then
+      clear_inactive_buoys()
     elseif meta_mode_option == "save state" then
-      -- TODO - save/load state logic
+      -- TODONOW - save/load state logic
     elseif meta_mode_option == "load state" then
     elseif meta_mode_option == "exit" then
       exit_meta_mode()
@@ -643,7 +656,7 @@ end
 function new_tide(position)
   for y = 1, g.rows do
     -- TODO - figure out wave sequencing here
-    tide_index = ((position - current_angle_gaps[y]) % tide_gap) + 1
+    tide_index = ((position - current_angle_gaps[y] - 1) % tide_gap) + 1
     num_new_particles = tide_shape()[tide_index] or 0
     num_new_particles = util.round(num_new_particles * tide_height_multiplier)
 
@@ -913,9 +926,7 @@ function redraw_screen()
   screen.update()
 end
 
--- TODO - maybe say K3 to enter somewhere?
 function redraw_meta_mode_screen()
-  -- META_MODE_OPTIONS = { "choose sample folder", "save state", "load state", "exit" }
   for option_index, option in pairs(META_MODE_OPTIONS) do
     if option_index == meta_mode_option_index then
       screen.level(15)
@@ -923,7 +934,7 @@ function redraw_meta_mode_screen()
       screen.level(5)
     end
     
-    screen.move(15, 10 + 10 * option_index)
+    screen.move(15, 5 + 10 * option_index)
     screen.text(option)
   end
 end
@@ -1175,7 +1186,6 @@ function Buoy:release_softcut_buffer()
   end
 end
 
--- TODO - work on parameterization like multiple samples, etc
 function Buoy:update_depth(new_depth)
   self.previous_depth = self.depth
   self.depth = new_depth
@@ -1193,16 +1203,16 @@ function Buoy:update_depth(new_depth)
   self:update_volume()
   
   if self:newly_exceeds_threshold() then
-    -- TODO - what if there were no buffers available?
+    -- TODONOW - what if there were no buffers available?
     self:grab_softcut_buffer()
     self:setup_softcut_params()
     self.active_start_time = util.time()
-    softcut.position(self.softcut_buffer, 1.0)
     softcut.play(self.softcut_buffer, 1)
   end
 end
 
 function Buoy:setup_softcut_params()
+  self:update_sound()
   self:update_volume()
   self:update_rate()
   self:update_looping()
@@ -1249,11 +1259,9 @@ function next_softcut_buffer()
       return i
     end
     
-    -- TODO - interruptibles that are non-looping should still be interruptible if
-    -- they are done playing, i.e. if util.time() - active_start_time > sample length
-    is_uninterruptible = buoy.options["uninterruptible"] == 2
+    is_interruptible = buoy.options["uninterruptible"] ~= 2
     
-    if not is_uninterruptible then
+    if buoy:finished_playing() or is_interruptible then
       if buoy.active_start_time < oldest_active_start_time then
         best_candidate = i
         oldest_active_start_time = buoy.active_start_time
@@ -1264,11 +1272,25 @@ function next_softcut_buffer()
   return best_candidate
 end
 
+function Buoy:finished_playing()
+  if self.softcut_buffer < 0 then
+    return true
+  end
+  
+  if self:is_looping() then
+    return false
+  end
+  
+  actual_duration = self:sound_details()["duration"] / self:effective_rate()
+  elapsed_time = util.time() - self.active_start_time
+  return elapsed_time > actual_duration
+end
+
 function Buoy:update_option(name, value)
   self.options[name] = value
   
   if name == "sound" then
-    -- TODONOW - update softcut buffer position, duration according to sample_details
+    self:update_sound()
   elseif name == "octave offset" then
     self:update_rate()
   elseif name == "semitone offset" then
@@ -1278,6 +1300,27 @@ function Buoy:update_option(name, value)
   elseif name == "looping" then
     self:update_looping()
   end
+end
+
+function Buoy:update_sound()
+  if self.softcut_buffer < 0 then
+    return
+  end
+  
+  details = self:sound_details()
+  if not details then
+    return
+  end
+
+  softcut.loop_start(self.softcut_buffer, details["start_location"])
+  softcut.loop_end(self.softcut_buffer, details["start_location"] + details["duration"])
+  -- TODO - handle negative rates
+  softcut.position(self.softcut_buffer, details["start_location"])
+end
+
+function Buoy:sound_details()
+  sound_index = self.options["sound"]
+  return sample_details[sound_index]
 end
 
 function Buoy:update_volume()
@@ -1300,8 +1343,11 @@ function Buoy:update_looping()
     return
   end
   
-  is_looping = self.options["looping"] == 2
-  softcut.loop(self.softcut_buffer, is_looping and 1 or 0)
+  softcut.loop(self.softcut_buffer, self:is_looping() and 1 or 0)
+end
+
+function Buoy:is_looping()
+  return self.options["looping"] == 2
 end
 
 function Buoy:update_rate()
@@ -1309,12 +1355,15 @@ function Buoy:update_rate()
     return
   end
   
+  softcut.rate(self.softcut_buffer, self:effective_rate())
+end
+
+function Buoy:effective_rate()
   octave_offset = self.options["octave offset"]
   semitone_offset = self.options["semitone offset"]
   cent_offset = self.options["cent offset"]
   
-  rate = 2.0 ^ (octave_offset + (semitone_offset / 12) + (cent_offset / 1200))
-  softcut.rate(self.softcut_buffer, rate)
+  return 2.0 ^ (octave_offset + (semitone_offset / 12) + (cent_offset / 1200))
 end
 
 -- grid
