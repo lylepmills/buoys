@@ -1,7 +1,6 @@
--- pilings v0
--- lights flow smoothly left to right like tides
-
-engine.name = "PolyPerc"
+-- pilings v1
+-- tides are modeled as particles
+-- pilings can be toggled but have no effect
 
 RUN = true
 
@@ -13,15 +12,16 @@ TIDE_HEIGHT = 5
 MAX_BRIGHTNESS = 15
 -- shape is defined right to left
 TIDE_SHAPE = {1, 3, 6, 10, 9, 8, 6, 4, 1}
-ADVANCE_TIME = 0.1
+ADVANCE_TIME = 0.15
 SMOOTHING_FACTOR = 4
 
 g = grid.connect()
 
 function init()
+  particles = {}
   old_grid_lighting = fresh_grid(MIN_LIGHTING)
   new_grid_lighting = fresh_grid(MIN_LIGHTING)
-  posts = fresh_grid(0)
+  pilings = fresh_grid(0)
 
   tide_interval_counter = 0
   smoothing_counter = 0
@@ -33,7 +33,7 @@ end
 
 g.key = function(x, y, z)
   if z == 1 then
-    posts[y][x] = 1 - posts[y][x]
+    pilings[y][x] = 1 - pilings[y][x]
   end
 end
 
@@ -54,19 +54,51 @@ function make_tides()
   if tide_interval_counter <= #TIDE_SHAPE then
     new_tide(tide_interval_counter)
   end
+  
+  particles_to_lighting()
 end
 
 function new_tide(position)
   for i = 1, GRID_HEIGHT do
-    new_grid_lighting[i][1] = math.min(new_grid_lighting[i][1] + TIDE_SHAPE[position], MAX_BRIGHTNESS)
+    for j = 1, TIDE_SHAPE[position] do
+      particle = {}
+      particle.x_pos = 1
+      particle.x_vel = 1.0
+      particle.y_pos = i
+      particle.y_vel = 0.0
+      table.insert(particles, particle)
+    end
   end
 end
 
 function roll_forward()
-  for i = GRID_HEIGHT, 1, -1 do
-    for j = GRID_WIDTH, 1, -1 do
-      new_grid_lighting[i][j] = old_grid_lighting[i][j-1] or MIN_LIGHTING
+  new_particles = {}
+  for _, particle in ipairs(particles) do
+    if math.random() < math.abs(particle.x_vel) then
+      delta = particle.x_vel > 0 and 1 or -1
+      particle.x_pos = particle.x_pos + delta
     end
+    if math.random() < math.abs(particle.y_vel) then
+      delta = particle.y_vel > 0 and 1 or -1
+      particle.y_pos = particle.y_pos + delta
+    end
+    
+    if particle.x_pos >= 1 and particle.x_pos <= GRID_WIDTH then
+      if particle.y_pos >= 1 and particle.y_pos <= GRID_HEIGHT then
+        table.insert(new_particles, particle)
+      end
+    end
+  end
+  
+  particles = new_particles
+end
+
+function particles_to_lighting()
+  new_grid_lighting = fresh_grid(MIN_LIGHTING)
+  for _, particle in ipairs(particles) do
+    x = particle.x_pos
+    y = particle.y_pos
+    new_grid_lighting[y][x] = math.min(new_grid_lighting[y][x] + 1, MAX_BRIGHTNESS)
   end
 end
 
@@ -113,9 +145,10 @@ function redraw_lights()
   
   for i = 1, GRID_HEIGHT do
     for j = 1, GRID_WIDTH do
-      brightness = posts[i][j] == 0 and grid_lighting[i][j] or 0
+      brightness = pilings[i][j] == 0 and grid_lighting[i][j] or 0
       g:led(j, i, brightness)
     end
   end
   g:refresh()
 end
+
