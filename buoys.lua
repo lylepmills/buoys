@@ -1,5 +1,5 @@
--- added velocity to dispersion
--- removed screen drawing
+-- pilings
+-- basic buoy UI interactions
 
 RUN = true
 SHOW_GRID = true
@@ -9,12 +9,14 @@ DISPERSION_MULTIPLE = 0.001
 TIDE_GAP = 25
 TIDE_HEIGHT = 5
 -- shape is defined right to left
-TIDE_SHAPE = {1, 3, 6, 10, 9, 8, 6, 4, 1}
--- TIDE_SHAPE = {6, 3, 2}
+-- TIDE_SHAPE = {1, 3, 6, 10, 9, 8, 6, 4, 1}
+TIDE_SHAPE = {6, 3, 2}
 COLLISION_OVERALL_DAMPING = 0.2
 COLLISION_DIRECTIONAL_DAMPING = 0.5
 VELOCITY_AVERAGING_FACTOR = 0.6
-DISPERSION_VELOCITY_FACTOR = 0.075
+DISPERSION_VELOCITY_FACTOR = 0.1
+LONG_PRESS_TIME = 1.0
+GRID_KEY_PRESS_METRO_TIME = 0.1
 POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
 
 g = grid.connect()
@@ -35,8 +37,12 @@ function init()
   params:add{ type = "number", id = "max_bright", name = "max brightness", min = 10, max = 15, default = 15 }
   params:add{ type = "number", id = "smoothing", name = "smoothing", min = 3, max = 6, default = 4 }
 
-  pilings = fresh_grid()
+  pilings = fresh_grid(0)
   particles = {}
+  held_grid_keys = fresh_grid(0)
+  buoys = fresh_grid(nil)
+  
+  displaying_buoys = false
 
   run = true
   
@@ -49,7 +55,63 @@ function init()
   if RUN then
     tide_maker = metro.init(smoothly_make_tides, params:get("advance_time") / params:get("smoothing"))
     tide_maker:start()
+    held_grid_keys_tracker = metro.init(update_held_grid_keys, GRID_KEY_PRESS_METRO_TIME)
+    held_grid_keys_tracker:start()
   end
+end
+
+function update_held_grid_keys()
+  keys_held = grid_keys_held()
+  newly_editing_buoys = false
+  
+  for _, key_held in ipairs(keys_held) do
+    x, y = key_held[1], key_held[2]
+    -- TODO - should only increment counters if we're not already editing buoys
+    held_grid_keys[y][x] = held_grid_keys[y][x] + 1
+    if held_grid_keys[y][x] > (LONG_PRESS_TIME / GRID_KEY_PRESS_METRO_TIME) then
+      newly_editing_buoys = true
+      held_grid_keys = fresh_grid(0)
+      break
+    end
+  end
+  
+  if newly_editing_buoys then
+    for _, key_held in ipairs(keys_held) do
+      x, y = key_held[1], key_held[2]
+      buoys[y][x] = buoys[y][x] or Buoy:new()
+      buoys[y][x].being_edited = true
+      buoys[y][x].active = true
+    end
+    
+    redraw_screen()
+  end
+end
+
+-- TODO - this gets called relatively often, maybe would be faster not to go through all of
+-- them every time
+function editing_buoys()
+  for x = 1, g.cols do
+    for y = 1, g.rows do
+      if buoys[y][x] and buoys[y][x].being_edited then
+        return true
+      end
+    end
+  end
+  
+  return false
+end
+
+function grid_keys_held()
+  result = {}
+  for x = 1, g.cols do
+    for y = 1, g.rows do
+      if held_grid_keys[y][x] > 0 then
+        table.insert(result, {x, y})
+      end
+    end
+  end
+  
+  return result
 end
 
 function update_advance_time()
@@ -59,6 +121,10 @@ end
 function key(n, z)
   if n == 3 and z == 1 then
     run = not run
+  end
+  
+  if n == 2 then
+    displaying_buoys = z == 1
   end
 end
 
@@ -137,7 +203,7 @@ end
 function disperse()
   -- avoid artefacts from dispersing in any particular order
   list_shuffle(particles)
-  particle_counts = fresh_grid()
+  particle_counts = fresh_grid(0)
   for _, particle in ipairs(particles) do
     x, y = particle.x_pos, particle.y_pos
     particle_counts[y][x] = particle_counts[y][x] + 1
@@ -166,17 +232,11 @@ function disperse()
       particle.x_pos = new_x
       particle.y_pos = new_y
       
-      -- NEW CODE START
       density = particle_counts[y][x]
       density_diff = density - find_in_grid(new_x, new_y, particle_counts, density - 1)
-      -- DISPERSION_VELOCITY_FACTOR
       particle.x_vel = particle.x_vel + (disperse_direction.x * DISPERSION_VELOCITY_FACTOR * density_diff)
       particle.y_vel = particle.y_vel + (disperse_direction.y * DISPERSION_VELOCITY_FACTOR * density_diff)
-      -- NEW CODE END
 
-      
-      -- TODO - when we disperse, add a small velocity accordingly?
-      
       particle_counts[y][x] = particle_counts[y][x] - 1
       particle_counts[new_y][new_x] = particle_counts[new_y][new_x] + 1
     end
@@ -249,9 +309,9 @@ function roll_forward()
 end
 
 function velocity_averaging()
-  x_vel_sums = fresh_grid()
-  y_vel_sums = fresh_grid()
-  particle_counts = fresh_grid()
+  x_vel_sums = fresh_grid(0)
+  y_vel_sums = fresh_grid(0)
+  particle_counts = fresh_grid(0)
   for _, particle in ipairs(particles) do
     x, y = particle.x_pos, particle.y_pos
     x_vel_sums[y][x] = x_vel_sums[y][x] + particle.x_vel
@@ -317,7 +377,7 @@ function find_in_grid(x, y, grid, default)
 end
 
 function grid_transition(proportion)
-  result = fresh_grid()
+  result = fresh_grid(0)
   
   for x = 1, g.cols do
     for y = 1, g.rows do
@@ -332,7 +392,25 @@ end
 function redraw_screen()
   screen.clear()
   screen.aa(1)
+  screen.font_face(24)
   
+  if editing_buoys() then
+    redraw_edit_buoy_screen()
+  else
+    redraw_regular_screen()
+  end
+  
+  screen.update()
+end
+
+function redraw_edit_buoy_screen()
+  screen.level(15)
+  screen.font_size(13)
+  screen.move(64, 28)
+  screen.text_center("EDITING BUOYS")
+end
+
+function redraw_regular_screen()
   redraw_flume_edges()
   
   screen.level(15)
@@ -341,11 +419,16 @@ function redraw_screen()
       if is_piling(x, y) then
         screen.circle(x * 8 - 4, y * 8 - 4, 3.4)
         screen.fill()
+      elseif buoys[y][x] and buoys[y][x].active then
+        screen.circle(x * 8 - 4, y * 8 - 4, 3.4)
+        screen.fill()
+        screen.level(0)
+        screen.circle(x * 8 - 4, y * 8 - 4, 2.7)
+        screen.fill()
+        screen.level(15)
       end
     end
   end
-  
-  screen.update()
 end
 
 function redraw_flume_edges()
@@ -370,6 +453,9 @@ function redraw_lights()
     for x = 1, g.cols do
       for y = 1, g.rows do
         brightness = is_piling(x, y) and 0 or grid_lighting[y][x]
+        if displaying_buoys and buoys[y][x] and buoys[y][x].active then
+          brightness = 15
+        end
         g:led(x, y, brightness)
       end
     end
@@ -378,7 +464,6 @@ function redraw_lights()
 end
 
 function fresh_grid(b)
-  b = b or 0
   return {
     {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
     {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
@@ -425,12 +510,45 @@ function deep_copy(obj)
   return res
 end
 
+-- buoys
+
+Buoy = {
+  active = false,
+  being_edited = false,
+  clip = nil,
+}
+
+function Buoy:new(o)
+  o = o or {}
+  setmetatable(o, self)
+  self.__index = self
+  return o
+end
+
+-- function Buoy:deposit (v)
+--   self.balance = self.balance + v
+-- end
+
 -- grid
 
 g.key = function(x, y, z)
+  if z == 0 then
+    if buoys[y][x] and (buoys[y][x].being_edited or buoys[y][x].active) then
+      if buoys[y][x].being_edited then
+        buoys[y][x].being_edited = false
+      elseif buoys[y][x].active then
+        buoys[y][x].active = false
+      end
+    else
+      pilings[y][x] = is_piling(x, y) and 0 or 1
+      clear_particles(x, y)
+    end
+    
+    held_grid_keys[y][x] = 0
+  end
+  
   if z == 1 then
-    pilings[y][x] = is_piling(x, y) and 0 or 1
-    clear_particles(x, y)
+    held_grid_keys[y][x] = 1
   end
   
   redraw_lights()
