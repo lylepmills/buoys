@@ -1,6 +1,5 @@
--- pilings_v23.lua
--- sound switching works
--- interruptability fully supported
+-- pilings_v24.lua
+-- wave sequencing part 1
 
 -- TODO LIST
 -- use local variables
@@ -18,8 +17,7 @@
 -- use E1 as a macro control?
 -- wave sequencing?
 -- if wave depth can affect playhead position, that could be used for granular stuff
--- in addition to height, you could have wave velocity play a role in sound parameters
----- or simpler version, just have the sample start playing backward when the net velocity is backward
+-- have the sample start playing backward when the net velocity is backward (make this optional)
 -- figure out how we're going to do slews - will they sound right for things like filtering?
 -- midi CC outputs, midi sync. midi note outputs - how would that work with velocity and such?
 -- crow support
@@ -29,12 +27,12 @@
 -- use controlspecs more?
 -- meta mode
 ---- global state saving/loading
--- 3 voice stereo mode? variable?
 -- check display logic for buoys in terms of both grid lights and norns display, seems to be some inconsistencies
 
 -- IDEAS FOR LATER VERSIONS
--- 1. maybe high/low tide volume ranges should extend beyond [0.0, 1.0]
+-- 1. maybe zenith/nadir volume ranges should extend beyond [0.0, 1.0]
 --    so that you could e.g. have volume max out before reaching absolute max depth?
+-- 2. support stereo samples
 
 -- ACKNOWLEDGEMENTS
 -- I borrowed some file/folder loading logic from Timber Player, thanks @markeats.
@@ -94,6 +92,16 @@ function sound_option_formatter(value)
   
   cleaned_name, _ = split_file_extension(sample_details[value].name)
   return cleaned_name
+end
+
+function panning_formatter(value)
+  if value == 0.0 then
+    return "C"
+  elseif value < 0.0 then
+    return util.round(value * 100).."L"
+  else
+    return util.round(value * 100).."R"
+  end
 end
 
 function offset_formatter(value)
@@ -187,14 +195,10 @@ end
 buoy_options = {
   -- TODO
   -- attack/decay (auto vs controlled)
-  -- thresholds (hysteresis?)
-  -- sample
   -- depth envelope response
-  ---- filter?
-  ---- min/max values
-  ---- volume
-  ---- pan?
-  ---- other options?
+  ---- filter
+  ---- position?
+  -- spaces between categories?
   {
     name = "sound",
     default_value = 0,
@@ -234,18 +238,32 @@ buoy_options = {
     formatter = offset_formatter,
   },
   {
-    name = "high tide volume",
+    name = "zenith volume",
     default_value = 1.0,
     option_range = {0.0, 1.0},
     option_step_value = 0.01,
   },
   {
-    name = "low tide volume",
+    name = "nadir volume",
     default_value = 0.0,
     option_range = {0.0, 1.0},
     option_step_value = 0.01,
   },
-  -- TODO - separate play/reset thresholds for looping stuff?
+  {
+    name = "zenith pan",
+    default_value = 0.0,
+    option_range = {-1.0, 1.0},
+    option_step_value = 0.01,
+    formatter = panning_formatter,
+  },
+  {
+    name = "nadir pan",
+    default_value = 0.0,
+    option_range = {-1.0, 1.0},
+    option_step_value = 0.01,
+    formatter = panning_formatter,
+  },
+  -- TODO - separate play/reset thresholds for looping stuff
   {
     name = "reset threshold",
     default_value = 1,
@@ -272,6 +290,8 @@ function init()
   buoy_editing_option_scroll_index = 1
   -- tide_shape_index can be fractional, indicating interpolation between shapes
   tide_shape_index = 1
+  -- TODONOW - this should default to 1
+  num_tide_shapes_in_sequence = 2
   tide_shapes = BASE_TIDE_SHAPES
   tide_gap = TIDE_GAP
   tide_advance_time = ADVANCE_TIME
@@ -287,7 +307,6 @@ function init()
   was_editing_tides = false
   meta_mode = false
   meta_mode_option_index = 1
-  -- TODO - start the app off in file_select_active if there are no samples already loaded?
   file_select_active = false
   tide_height_multiplier = 1.0
   dispersion_ui_brightnesses = {}
@@ -308,16 +327,28 @@ end
 
 function tide_shape()
   result = {}
-  first_shape_index, interpolation_fraction = math.modf(tide_shape_index)
-  second_shape_index = first_shape_index == #tide_shapes and 1 or first_shape_index + 1
-  first_shape = tide_shapes[first_shape_index]
-  second_shape = tide_shapes[second_shape_index]
 
-  for i = 1, 8 do
-    result[i] = util.round(first_shape[i] * (1 - interpolation_fraction) + second_shape[i] * interpolation_fraction)
+  for shape_index = 1, num_tide_shapes_in_sequence do
+    first_shape_index, interpolation_fraction = math.modf(tide_shape_index + shape_index - 1)
+    first_shape_index = ((first_shape_index - 1) % 8) + 1
+    second_shape_index = (first_shape_index % 8) + 1
+    first_shape = tide_shapes[first_shape_index]
+    second_shape = tide_shapes[second_shape_index]
+    
+    for i = 1, 8 do
+      result_index = i + ((shape_index - 1) * 8)
+      first_shape_part = first_shape[i] * (1 - interpolation_fraction)
+      second_shape_part = second_shape[i] * interpolation_fraction
+      result[result_index] = util.round(first_shape_part + second_shape_part)
+    end
   end
   
   return result
+end
+
+function max_depth_updated_action(max_depth)
+  -- as a side effect of recomputing depths, particles_to_tide_depths will clear excess particles
+  particles_to_tide_depths()
 end
 
 function init_params()
@@ -330,8 +361,7 @@ function init_params()
   params:add{ type = "number", id = "dispersion", name = "dispersion", min = 0, max = 25, default = 10 }
   params:add_separator()
   params:add{ type = "number", id = "min_bright", name = "min brightness", min = 1, max = 3, default = 1 }
-  -- TODO - when "max_depth" updates, we should clear excess particles
-  params:add{ type = "number", id = "max_depth", name = "max depth", min = 8, max = 14, default = 14 }
+  params:add{ type = "number", id = "max_depth", name = "max depth", min = 8, max = 14, default = 14, action = max_depth_updated_action }
   params:add{ type = "option", id = "smoothing", name = "visual smoothing", options = { "on", "off" } }
 end
 
@@ -526,7 +556,7 @@ function key(n, z)
     elseif meta_mode_option == "clear inactive buoys" then
       clear_inactive_buoys()
     elseif meta_mode_option == "save state" then
-      -- TODONOW - save/load state logic
+      -- TODO - save/load state logic
     elseif meta_mode_option == "load state" then
     elseif meta_mode_option == "exit" then
       exit_meta_mode()
@@ -639,15 +669,14 @@ function make_tides()
   
   tide_interval_counter = (tide_interval_counter % (tide_gap)) + 1
 
+  -- TODO - should we just recompute this every time
+  -- i.e. do we really need this check?
   if tide_interval_counter == 1 then
     current_angle_gaps = angle_gaps()
   end
   
-  total_tide_width = 8 + math.max(table.unpack(current_angle_gaps))
-  if tide_interval_counter <= total_tide_width then
-    new_tide(tide_interval_counter)
-  end
-  
+  new_tide(tide_interval_counter)
+
   velocity_averaging()
   particles_to_tide_depths()
   tide_depths_to_lighting()
@@ -655,7 +684,6 @@ end
 
 function new_tide(position)
   for y = 1, g.rows do
-    -- TODO - figure out wave sequencing here
     tide_index = ((position - current_angle_gaps[y] - 1) % tide_gap) + 1
     num_new_particles = tide_shape()[tide_index] or 0
     num_new_particles = util.round(num_new_particles * tide_height_multiplier)
@@ -1179,7 +1207,7 @@ function Buoy:deactivate()
 end
 
 function Buoy:release_softcut_buffer()
-  if self.softcut_buffer > 0 then
+  if self:has_softcut_buffer() then
     softcut.play(self.softcut_buffer, 0)
     buffer_buoy_map[self.softcut_buffer] = nil
     self.softcut_buffer = -1
@@ -1201,10 +1229,15 @@ function Buoy:update_depth(new_depth)
   end
   
   self:update_volume()
+  self:update_panning()
   
   if self:newly_exceeds_threshold() then
-    -- TODONOW - what if there were no buffers available?
     self:grab_softcut_buffer()
+    -- if there are a lot of active uninterruptible buffers
+    -- it's possible we might not be able to grab one
+    if not self:has_softcut_buffer() then
+      return
+    end
     self:setup_softcut_params()
     self.active_start_time = util.time()
     softcut.play(self.softcut_buffer, 1)
@@ -1214,20 +1247,22 @@ end
 function Buoy:setup_softcut_params()
   self:update_sound()
   self:update_volume()
+  self:update_panning()
   self:update_rate()
   self:update_looping()
 end
 
+function Buoy:has_softcut_buffer()
+  return self.softcut_buffer > 0
+end
+
 function Buoy:grab_softcut_buffer()
-  if self.softcut_buffer > 0 then
+  if self:has_softcut_buffer() then
     return
   end
   
   self.softcut_buffer = next_softcut_buffer()
-  
-  -- if there are a lot of active uninterruptible buffers
-  -- it's possible we might not be able to grab one
-  if not (self.softcut_buffer > 0) then
+  if not self:has_softcut_buffer() then
     return
   end
   
@@ -1248,7 +1283,8 @@ function Buoy:newly_exceeds_threshold()
   return (self.previous_depth < reset_threshold) and (self.depth >= reset_threshold)
 end
 
--- oldest voices are stolen first, unless marked uninterruptible
+-- oldest voices are stolen first unless marked uninterruptible, in which case
+-- they'll only be stolen if they are finished playing
 function next_softcut_buffer()
   oldest_active_start_time = math.huge
   best_candidate = nil
@@ -1273,7 +1309,7 @@ function next_softcut_buffer()
 end
 
 function Buoy:finished_playing()
-  if self.softcut_buffer < 0 then
+  if not self:has_softcut_buffer() then
     return true
   end
   
@@ -1303,7 +1339,7 @@ function Buoy:update_option(name, value)
 end
 
 function Buoy:update_sound()
-  if self.softcut_buffer < 0 then
+  if not self:has_softcut_buffer() then
     return
   end
   
@@ -1312,10 +1348,12 @@ function Buoy:update_sound()
     return
   end
 
-  softcut.loop_start(self.softcut_buffer, details["start_location"])
-  softcut.loop_end(self.softcut_buffer, details["start_location"] + details["duration"])
-  -- TODO - handle negative rates
-  softcut.position(self.softcut_buffer, details["start_location"])
+  start_loc = details["start_location"]
+  end_loc = start_loc + details["duration"]
+  start_pos = self:effective_rate() >= 0 and start_loc or end_loc
+  softcut.loop_start(self.softcut_buffer, start_loc)
+  softcut.loop_end(self.softcut_buffer, end_loc)
+  softcut.position(self.softcut_buffer, start_pos)
 end
 
 function Buoy:sound_details()
@@ -1323,13 +1361,24 @@ function Buoy:sound_details()
   return sample_details[sound_index]
 end
 
-function Buoy:update_volume()
-  if self.softcut_buffer < 0 then
+function Buoy:update_panning()
+  if not self:has_softcut_buffer() then
     return
   end
   
-  ltv = self.options["low tide volume"]
-  htv = self.options["high tide volume"]
+  ltp = self.options["nadir pan"]
+  htp = self.options["zenith pan"]
+  new_pan = ltp + ((htp - ltp) * self:tide_ratio())
+  softcut.pan(self.softcut_buffer, new_pan)
+end
+
+function Buoy:update_volume()
+  if not self:has_softcut_buffer() then
+    return
+  end
+  
+  ltv = self.options["nadir volume"]
+  htv = self.options["zenith volume"]
   new_level = ltv + ((htv - ltv) * self:tide_ratio())
   softcut.level(self.softcut_buffer, new_level)
 end
@@ -1339,7 +1388,7 @@ function Buoy:tide_ratio()
 end
 
 function Buoy:update_looping()
-  if self.softcut_buffer < 1 then
+  if not self:has_softcut_buffer() then
     return
   end
   
@@ -1351,7 +1400,7 @@ function Buoy:is_looping()
 end
 
 function Buoy:update_rate()
-  if self.softcut_buffer < 1 then
+  if not self:has_softcut_buffer() then
     return
   end
   
@@ -1373,6 +1422,7 @@ g.key = function(x, y, z)
     return
   end
   
+  -- TODONOW - wave sequencing logic
   if editing_tide_shapes() then
     if z == 1 then
       if x == 1 then
