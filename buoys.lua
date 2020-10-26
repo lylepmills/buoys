@@ -1,11 +1,13 @@
 -- pilings
--- velocity averaging + dispersion are implemented
--- adding a piling clears particles in that spot
--- piling drawings on norns screen
+-- flume mode added
+-- wave angles added
 
 RUN = true
 
-MIN_LIGHTING = 1
+WAVE_ANGLE = -45  -- range -60, 60, default 0
+FLUME_MODE = false
+
+MIN_LIGHTING = 2      -- range 1..3, default 2
 GRID_HEIGHT = 8
 GRID_WIDTH = 16
 TIDE_GAP = 25
@@ -29,11 +31,14 @@ function init()
   
   old_grid_lighting = fresh_grid(MIN_LIGHTING)
   new_grid_lighting = fresh_grid(MIN_LIGHTING)
+  current_angle_gaps = angle_gaps()
   tide_interval_counter = 0
   smoothing_counter = 0
   
-  tide_maker = metro.init(smoothly_make_tides, ADVANCE_TIME / SMOOTHING_FACTOR)
-  if RUN then tide_maker:start() end
+  if RUN then 
+    tide_maker = metro.init(smoothly_make_tides, ADVANCE_TIME / SMOOTHING_FACTOR)
+    tide_maker:start()
+  end
 end
 
 g.key = function(x, y, z)
@@ -55,14 +60,16 @@ end
 
 function make_tides()
   old_grid_lighting = deep_copy(new_grid_lighting)
-  -- shuffling particles makes processes that depend on a random order work,
-  -- like disperse()
-  list_shuffle(particles)
   disperse()
   roll_forward()
   
-  tide_interval_counter = tide_interval_counter % (TIDE_GAP + #TIDE_SHAPE) + 1
-  if tide_interval_counter <= #TIDE_SHAPE then
+  tide_interval_counter = (tide_interval_counter % (TIDE_GAP + #TIDE_SHAPE)) + 1
+  if tide_interval_counter == 1 then
+    current_angle_gaps = angle_gaps()
+  end
+  
+  total_tide_width = #TIDE_SHAPE + math.max(table.unpack(current_angle_gaps))
+  if tide_interval_counter <= total_tide_width then
     new_tide(tide_interval_counter)
   end
   
@@ -72,23 +79,43 @@ end
 
 function new_tide(position)
   for y = 1, GRID_HEIGHT do
-    for _ = 1, TIDE_SHAPE[position] do
-      particle = {}
-      particle.x_pos = 1
-      particle.x_vel = 1.0
-      particle.y_pos = y
-      particle.y_vel = 0.0
-      
+    num_new_particles = TIDE_SHAPE[position - current_angle_gaps[y]] or 0
+    
+    for _ = 1, num_new_particles do
       if not is_piling(1, y) then
+        particle = {}
+        particle.x_pos = 1
+        particle.x_vel = 1.0
+        particle.y_pos = y
+        particle.y_vel = 0.0
+      
         table.insert(particles, particle)
       end
     end
   end
 end
 
+function angle_gaps()
+  distance = math.tan(degrees_to_radians(WAVE_ANGLE))
+  offset = math.abs(math.min(0, round((GRID_HEIGHT - 1) * distance)))
+  
+  result = {}
+  for i = 0, GRID_HEIGHT - 1 do
+    table.insert(result, round(i * distance) + offset)
+  end
+  
+  return result
+end
+
+function degrees_to_radians(degrees)
+  return degrees * math.pi / 180
+end
+
 -- move particles from areas of higher density to lower
 -- (not allowing dispersion outside the grid)
 function disperse()
+  -- avoid artefacts from dispersing in any particular order
+  list_shuffle(particles)
   particle_counts = fresh_grid()
   for _, particle in ipairs(particles) do
     x, y = particle.x_pos, particle.y_pos
@@ -239,6 +266,9 @@ function particles_to_lighting()
 end
 
 function is_piling(x, y)
+  if FLUME_MODE and (y < 1 or y > GRID_HEIGHT) then
+    return true
+  end
   return find_in_grid(x, y, pilings, 0) ~= 0
 end
 
@@ -266,12 +296,25 @@ end
 function redraw_screen()
   screen.clear()
   screen.aa(1)
-  screen.level(15)
   
+  if FLUME_MODE then
+    screen.level(15)
+    screen.rect(0, 0, 128, 1)
+    screen.fill()
+    screen.rect(0, 63, 128, 1)
+    screen.fill()
+    screen.level(7)
+    screen.rect(0, 1, 128, 1)
+    screen.fill()
+    screen.rect(0, 62, 128, 1)
+    screen.fill()
+  end
+  
+  screen.level(15)
   for x = 1, GRID_WIDTH do
     for y = 1, GRID_HEIGHT do
       if is_piling(x, y) then
-        screen.circle(x * 8 - 4, y * 8 - 4, 3.5)
+        screen.circle(x * 8 - 4, y * 8 - 4, 3.4)
         screen.fill()
       end
     end
@@ -335,3 +378,4 @@ function deep_copy(obj)
   for k, v in pairs(obj) do res[deep_copy(k)] = deep_copy(v) end
   return res
 end
+
