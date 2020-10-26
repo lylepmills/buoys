@@ -1,5 +1,7 @@
--- pilings_v28.lua
--- crow outputs, crow inputs pt 1
+-- pilings_v29.lua
+-- make crow clocking more robust
+
+-- tidal influencer/activator
 
 -- TODO LIST
 -- tune defaults
@@ -32,7 +34,10 @@
 ---- https://vimeo.com/416730766
 -- negative rates
 -- organize buoy params into a two-layer nested menu?
--- protect against multiple buoys with the same crow output?
+-- fix floating point display stuff
+
+-- NOTES FOR RELEASE
+-- concept of safeguards - e.g. how we downshift the clock multiplier if the clock is too fast
 
 
 -- IDEAS FOR LATER VERSIONS
@@ -80,7 +85,7 @@ BACKGROUND_METRO_TIME = 0.1
 POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
 META_MODE_KEYS = { { x=1, y=1 }, { x=1, y=8 }, { x=16, y=1 }, { x=16, y=8 } }
 META_MODE_OPTIONS = { "choose sample folder", "clear inactive buoys", "save state", "load state", "exit" }
-NUM_CROW_CLOCKS_PER_CYCLE = 8
+NUM_CROW_CLOCKS_PER_CHECK = 8
 ACCEPTABLE_CLOCK_DRIFT = 0.01
 
 function sound_option_formatter(value)
@@ -430,6 +435,7 @@ all_buoy_options = {
     option_range = {0, 15},
     option_step_value = 1,
     formatter = zero_is_none_formatter,
+    crow_only = true,
   },
 }
 
@@ -491,12 +497,15 @@ function init()
   smoothing_counter = 0
   tide_info_overlay_countdown = 0
   sample_rate_warning_countdown = 0
+  crow_clock_warning_countdown = 0
+  crow_clock_warning_details = {}
   key_states = {0, 0, 0}
   was_editing_tides = false
   meta_mode = false
   meta_mode_option_index = 1
   file_select_active = false
   tide_height_multiplier = 1.0
+  crow_known_to_be_connected = crow.connected()
   dispersion_ui_brightnesses = {}
   sample_details = {}
   for i = 1, 64 do
@@ -533,6 +542,14 @@ function tide_shape()
   end
   
   return result
+end
+
+function crow_clock_multiplier_updated_action(multiplier)
+  if crow_clock_received_recently() then
+    -- rather than updating right away, wait until the next clock tick so that
+    -- the metro is synched to the clock signal as well as possible
+    force_crow_advance_time_update = true
+  end
 end
 
 function max_depth_updated_action(max_depth)
@@ -577,55 +594,89 @@ function init_params()
   params:add{ type = "number", id = "max_depth", name = "max depth", min = 8, max = 14, default = 14, action = max_depth_updated_action }
   params:add{ type = "option", id = "smoothing", name = "visual smoothing", options = { "on", "off" } }
   params:add{ type = "option", id = "extended_buoy_params", name = "extended buoy params", options = { "off", "on" } }
+  params:add{ type = "number", id = "crow_clock_multiplier", name = "crow clock multiplier", min = 1, max = 8, default = 1, 
+              action = crow_clock_multiplier_updated_action }
 end
 
--- TODONOW - finish
-function process_crow_clock(v)
-  current_time = util.time()
-  
-  if not last_crow_clock_cycle_began then
-    last_crow_clock_cycle_began = current_time
-    return
-  end
-  
-  crow_clock_cycle_counter = crow_clock_cycle_counter + 1
-  
-  if crow_clock_cycle_counter % NUM_CROW_CLOCKS_PER_CYCLE ~= 0 then
-    return
-  end
-  
-  expected_time = last_crow_clock_cycle_began + (tide_advance_time * crow_clock_cycle_counter)
-  drift = current_time - expected_time
-  if math.abs(drift) < ACCEPTABLE_CLOCK_DRIFT then
-    -- clock timing can be imprecise - this approach strikes a compromise between quickly
-    -- adapting to changes in clock rate and making too many updates to the tide_maker metro, 
-    -- which has it's own disadvantages
-    return
-  end
-  
-  -- TODONOW - do something to throw out very old clocks if we stop 
-  -- receiving them from crow for a while
-  
-  clock_cycle_elapsed_time = current_time - last_crow_clock_cycle_began
-  clock_delta = clock_cycle_elapsed_time / crow_clock_cycle_counter
-  
-  crow_clock_cycle_counter = 0
-  last_crow_clock_cycle_began = current_time
+function force_tide_update_next_tick()
+  smoothing_counter = smoothing_factor - 1
+end
 
-  -- TODONOW - offer a clock multiplier/divider option in the params
-  if clock_delta < MIN_TIDE_ADVANCE_TIME then
-    -- TODONOW - issue warning about too fast of a clock being received
-  else
-    -- TODONOW - reset smoothing counter when resetting clock
-    -- (and figure out smoothing counter stuff more generally)
-    tide_advance_time = clock_delta
-    update_advance_time()
+function process_crow_clock(v)
+  -- restore maximum synchronicity after unpausing
+  if recently_unpaused and crow_clock_era_counter > 100 then
+    recently_unpaused = false
+    force_tide_update_next_tick()
   end
+  
+  current_time = util.time()
+  last_crow_clock_received = current_time
+  
+  if not last_crow_clock_era_began then
+    last_crow_clock_era_began = current_time
+    return
+  end
+  
+  crow_clock_era_counter = crow_clock_era_counter + 1
+  
+  if crow_clock_era_counter % NUM_CROW_CLOCKS_PER_CHECK ~= 0 then
+    return
+  end
+  
+  expected_tick_time = tide_advance_time * params:get("crow_clock_multiplier")
+  expected_time = last_crow_clock_era_began + (expected_tick_time * crow_clock_era_counter)
+  drift = current_time - expected_time
+  
+  -- clock timing can be imprecise - tracking drift strikes a compromise between quickly
+  -- adapting to changes in clock rate and making too many updates to the tide_maker metro, 
+  -- which has it's own disadvantages
+  if math.abs(drift) < ACCEPTABLE_CLOCK_DRIFT then
+    if force_crow_advance_time_update then
+      force_crow_advance_time_update = false
+      set_advance_time_with_crow_clocks()
+    end
+    
+    return
+  end
+  
+  clock_era_elapsed_time = current_time - last_crow_clock_era_began
+  clock_delta = clock_era_elapsed_time / crow_clock_era_counter
+  
+  crow_clock_era_counter = 0
+  last_crow_clock_era_began = current_time
+  
+  set_advance_time_with_crow_clocks()
+end
+
+function set_advance_time_with_crow_clocks()
+  new_tide_advance_time = clock_delta / params:get("crow_clock_multiplier")
+  if new_tide_advance_time < MIN_TIDE_ADVANCE_TIME then
+    max_allowable_clock_multiplier = math.floor(clock_delta / MIN_TIDE_ADVANCE_TIME)
+    if max_allowable_clock_multiplier >= 1 then
+      params:set("crow_clock_multiplier", max_allowable_clock_multiplier)
+    end
+    
+    crow_clock_warning_countdown = 50
+    crow_clock_warning_details = {
+      new_tide_advance_time = new_tide_advance_time,
+      max_allowable_clock_multiplier = max_allowable_clock_multiplier,
+    }
+  else
+    crow_clock_warning_countdown = 0
+    
+    force_tide_update_next_tick()
+    tide_advance_time = new_tide_advance_time
+    update_tide_maker_metro()
+  end
+  
+  redraw()
 end
 
 function init_crow()
-  last_crow_clock_cycle_began = nil
-  crow_clock_cycle_counter = 0
+  force_crow_advance_time_update = false
+  last_crow_clock_received = nil
+  last_crow_clock_era_began = nil
+  crow_clock_era_counter = 0
   crow.input[1].change = process_crow_clock
   crow.input[1].mode("change", 4.5, 0.25, "rising")
 end
@@ -651,6 +702,14 @@ function init_softcut()
   end
 end
 
+function crow_clock_received_recently()
+  if not last_crow_clock_received then
+    return false
+  end
+  
+  return (util.time() - last_crow_clock_received) < 3.0
+end
+
 function background_metro_tasks()
   update_held_grid_keys()
   update_dispersion_ui()
@@ -660,15 +719,32 @@ function background_metro_tasks()
   sample_rate_warning_expiring = sample_rate_warning_countdown == 1
   sample_rate_warning_countdown = math.max(sample_rate_warning_countdown - 1, 0)
   
+  crow_clock_warning_expiring = crow_clock_warning_countdown == 1
+  crow_clock_warning_countdown = math.max(crow_clock_warning_countdown - 1, 0)
+  
+  -- if a crow has just recently been connected, we need to manually set its
+  -- callbacks. if it has just been disconnected, we should reset our timers
+  -- and counters.
+  if crow_known_to_be_connected ~= crow.connected() then
+    init_crow()
+  end
+  
+  -- besides disconnections, if we haven't received clocks from crow for a while,
+  -- we should throw out any old data wewere keeping on them so nothing weird 
+  -- happens if we start getting them again.
+  if last_crow_clock_received and not crow_clock_received_recently() then
+    init_crow()
+  end
+  
   if advance_time_dirty then
     -- updating this synchronously instead of in a background process makes
     -- the waves appear to slow/stop while the rate is being changed because
     -- each update resets the metro
-    update_advance_time()
+    update_tide_maker_metro()
   end
   
-  if tide_info_overlay_expiring or sample_rate_warning_expiring then
-    redraw_screen()
+  if tide_info_overlay_expiring or sample_rate_warning_expiring or crow_clock_warning_expiring then
+    redraw()
   end
 end
 
@@ -739,7 +815,7 @@ function update_held_grid_keys()
     end
     buoy_editing_prototype = buoys[longest_held_key[2]][longest_held_key[1]]
 
-    redraw_screen()
+    redraw()
   end
 end
 
@@ -806,7 +882,7 @@ function grid_keys_held()
   return result
 end
 
-function update_advance_time()
+function update_tide_maker_metro()
   for x = 1, g.cols do
     for y = 1, g.rows do
       if buoys[y][x] then
@@ -816,8 +892,8 @@ function update_advance_time()
     end
   end
   
-  -- TODONOW - update smoothing_counter accordingly
   smoothing_factor = util.clamp(util.round(tide_advance_time * 20), 2, 8)
+  smoothing_counter = math.min(smoothing_counter, smoothing_factor - 1)
   tide_maker:start(tide_advance_time / smoothing_factor)
   advance_time_dirty = false
 end
@@ -859,6 +935,7 @@ function key(n, z)
         displaying_buoys = not displaying_buoys
       elseif n == 3 then
         run = not run
+        recently_unpaused = run
       end
     end
     
@@ -884,15 +961,23 @@ function displaying_sample_rate_warning()
   return sample_rate_warning_countdown > 0
 end
 
+function displaying_crow_clock_warning()
+  return crow_clock_warning_countdown > 0
+end
+
 function enc(n, d)
   if meta_mode then
     meta_mode_option_index = util.clamp(meta_mode_option_index + d, 1, #META_MODE_OPTIONS)
   elseif not editing_buoys() then
     if n == 2 then
-      -- TODONOW - if crow clock has been received recently, offer a multiplier menu instead
       tide_info_overlay_countdown = 10
-      tide_advance_time = util.round(math.max(tide_advance_time + d * 0.001, MIN_TIDE_ADVANCE_TIME), 0.001)
-      advance_time_dirty = true
+      
+      if crow_clock_received_recently() then
+        params:delta("crow_clock_multiplier", d)
+      else
+        tide_advance_time = util.round(math.max(tide_advance_time + d * 0.001, MIN_TIDE_ADVANCE_TIME), 0.001)
+        advance_time_dirty = true
+      end
     end
     if n == 3 then
       tide_info_overlay_countdown = 10
@@ -935,7 +1020,7 @@ function enc(n, d)
     end
   end
   
-  redraw_screen()
+  redraw()
 end
 
 function degree_formatter(tbl)
@@ -972,6 +1057,8 @@ function make_tides()
   roll_forward()
   update_angle_gaps()
   
+  -- TODONOW - if tide gap has dropped recently such that tide_interval_counter is more than the usual amount
+  -- over, we should make a new tide immediately
   tide_interval_counter = (tide_interval_counter % (tide_gap)) + 1
   
   new_tide(tide_interval_counter)
@@ -1228,10 +1315,6 @@ function redraw()
     return
   end
   
-  redraw_screen()
-end
-
-function redraw_screen()
   screen.clear()
   screen.aa(1)
   screen.font_face(1)
@@ -1246,6 +1329,8 @@ function redraw_screen()
     redraw_tide_info_overlay()
   elseif displaying_sample_rate_warning() then
     redraw_sample_rate_warning()
+  elseif displaying_crow_clock_warning() then
+    redraw_crow_clock_warning()
   else
     redraw_regular_screen()
   end
@@ -1264,6 +1349,32 @@ function redraw_meta_mode_screen()
     screen.move(15, 5 + 10 * option_index)
     screen.text(option)
   end
+end
+
+function redraw_crow_clock_warning()
+  screen.font_face(7)
+  screen.font_size(20)
+  
+  screen.move(64, 20)
+  screen.text_center("WARNING")
+  
+  screen.font_face(1)
+  screen.font_size(8)
+    
+  if crow_clock_warning_details.max_allowable_clock_multiplier >= 1 then
+    second_line = "for current clock multiplier"
+    third_line = "multiplier shifted to "..crow_clock_warning_details.max_allowable_clock_multiplier
+  else
+    second_line = "tide advance time would be"
+    third_line = util.round(crow_clock_warning_details.new_tide_advance_time, 0.001)..", min is ".. MIN_TIDE_ADVANCE_TIME
+  end
+  
+  screen.move(64, 35)
+  screen.text_center("crow clock received too fast")
+  screen.move(64, 50)
+  screen.text_center(second_line)
+  screen.move(64, 60)
+  screen.text_center(third_line)
 end
 
 function redraw_sample_rate_warning()
@@ -1285,10 +1396,11 @@ function redraw_sample_rate_warning()
 end
 
 function redraw_tide_info_overlay()
+  using_crow_clock = crow_clock_received_recently()
   screen.move(0, 30)
-  screen.text("tide advance time")
+  screen.text(using_crow_clock and "crow clock multiplier" or "tide advance time")
   screen.move(128, 30)
-  screen.text_right(tide_advance_time)
+  screen.text_right(using_crow_clock and params:get("crow_clock_multiplier") or tide_advance_time)
   
   screen.move(0, 40)
   screen.text("tide gap")
@@ -1584,6 +1696,7 @@ function Buoy:update_depth(new_depth)
   self:update_filtering()
   self:update_crow()
   
+  -- TODO - what if the play threshold is at "none", then how should we proceed?
   if self:newly_exceeds_play_threshold() then
     self:grab_softcut_buffer()
     -- if there are a lot of active uninterruptible buffers
@@ -2008,7 +2121,7 @@ g.key = function(x, y, z)
   end
   
   redraw_lights()
-  redraw_screen()
+  redraw()
 end
 
 -- arc
