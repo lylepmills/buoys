@@ -1,32 +1,30 @@
--- pilings_v31.lua
--- midi sync
+-- pilings_v32.lua
+-- second crow input
+-- negative dispersion
+
 -- tidal influencer/activator/lightshow
 
 -- TODO LIST
--- tune defaults
----- especially collisions
+-- REMAINING FEATURES
 -- check display logic for buoys in terms of both grid lights and norns display, seems to be some inconsistencies
 -- make a util method for all the places where we use the % operator in a weird way to constrain to a [1, x] range
 -- more extended_only params
 ---- hysteresis for triggered thresholds
--- test midi mapping
 -- use local variables
 -- negative rates
 ---- have the sample start playing backward when the net velocity is backward (make this optional)
 -- fix floating point display stuff
 -- should pausing also pause the loops?
--- organize into libs?
--- negative dispersion
 -- settable start/end points for samples?
--- cv in per buoy
--- granular mode!!!
----- as things move over, the wave density could be reflective of the likelihood of playing
----- a particular grain
--- maybe make the code more organized so the interface layer could be repurposed for a different app
----- e.g. a granular mode where each column density relates to the likelihood of playing a particular grain,
----- and each row is a different sample
 -- make E1 control reverb send?
--- make crow input 2 a run/reset type thing?
+---- tab.print(params.params[12])
+
+-- LAST FEW THINGS
+-- test midi mapping
+-- tune defaults
+---- especially collisions
+-- organize into libs?
+
 
 
 -- NOTES FOR RELEASE
@@ -58,7 +56,7 @@
 fileselect = require "fileselect"
 
 RUN = true
-RUN_SIMPLE = true
+RUN_SIMPLE = false
 
 DISPERSION_MULTIPLE = 0.001
 
@@ -576,6 +574,8 @@ g = grid.connect()
 
 function init()
   init_params()
+  -- set an initial value for dispersion_shadow_param
+  dispersion_updated_action(params:get("dispersion"))
   
   particles = {}
   pilings = fresh_grid(0)
@@ -662,6 +662,31 @@ function tide_shape()
   return result
 end
 
+function update_dispersion_param()
+  -- dead zone
+  if math.abs(dispersion_shadow_param) < 250 then
+    new_dispersion = 0
+  elseif dispersion_shadow_param > 0 then
+    new_dispersion = (dispersion_shadow_param - 250) / 100
+  else
+    new_dispersion = (dispersion_shadow_param + 250) / 100
+  end
+  
+  if params:get("dispersion") ~= new_dispersion then
+    params:set("dispersion", new_dispersion)
+  end
+end
+
+function dispersion_updated_action(dispersion)
+  if dispersion == 0 then
+    dispersion_shadow_param = 0
+  elseif dispersion > 0 then
+    dispersion_shadow_param = (dispersion * 100) + 250
+  else
+    dispersion_shadow_param = (dispersion * 100) - 250
+  end
+end
+
 function max_depth_updated_action(max_depth)
   -- as a side effect of recomputing depths, particles_to_tide_depths will clear excess particles
   particles_to_tide_depths()
@@ -691,16 +716,25 @@ function max_depth_updated_action(max_depth)
 end
 
 function init_params()
-  params:add_group("PILINGS", 9)
+  params:add_group("PILINGS", 12)
   
   params:add{ type = "option", id = "channel_style", name = "channel style", options = { "open", "flume" } }
   params:add{ type = "option", id = "extended_buoy_params", name = "extended buoy params", options = { "off", "on" } }
   params:add{ type = "option", id = "smoothing", name = "visual smoothing", options = { "off", "on" }, default = 2 }
   params:add_separator()
   params:add{ type = "number", id = "angle", name = "wave angle", min = -60, max = 60, default = 0, formatter = degree_formatter }
-  params:add{ type = "number", id = "dispersion", name = "dispersion", min = 0, max = 25, default = 10 }
+  params:add{ type = "number", id = "dispersion", name = "dispersion", min = -25, max = 25, default = 10, action = dispersion_updated_action }
+  -- TODO - still would be nice to have options for midi mapping the other wave params
+  params:add_separator()
+  -- don't allow clocks on both inputs, that's just going to make things confusing and not work well
+  params:add{ type = "option", id = "crow_input_1", name = "crow input 1", options = { "clock", "run", "reset" }, default = 1 }
+  params:add{ type = "option", id = "crow_input_2", name = "crow input 2", options = { "run", "reset" }, default = 1 }
   params:add_separator()
   params:add{ type = "number", id = "min_bright", name = "background brightness", min = 1, max = 3, default = 1 }
+  -- TODO - is max_depth respected at every point?
+  ---- in the tide editor
+  ---- new tide generation
+  ---- ???
   params:add{ type = "number", id = "max_depth", name = "max depth", min = 8, max = 14, default = 14, action = max_depth_updated_action }
 end
 
@@ -773,8 +807,28 @@ function process_midi_clock()
   
   set_advance_time_with_external_clocks()
 end
+  
+function process_crow_first_input(v)
+  if params:get("crow_input_1") == 1 and v == 1 then  -- clock
+    process_crow_clock()
+  elseif params:get("crow_input_1") == 2 then  -- run
+    run = v == 1
+    recently_unpaused = run
+  elseif params:get("crow_input_1") == 3 and v == 1 then  -- reset
+    reset_tides()
+  end
+end
 
-function process_crow_clock(v)
+function process_crow_second_input(v)
+  if params:get("crow_input_2") == 1 then  -- run
+    run = v == 1
+    recently_unpaused = run
+  elseif params:get("crow_input_2") == 2 and v == 1 then  -- reset
+    reset_tides()
+  end
+end
+
+function process_crow_clock()
   -- restore maximum synchronicity after unpausing
   if recently_unpaused and crow_clock_era_counter > 100 then
     recently_unpaused = false
@@ -857,8 +911,10 @@ function init_crow()
   last_crow_clock_received = nil
   last_crow_clock_era_began = nil
   crow_clock_era_counter = 0
-  crow.input[1].change = process_crow_clock
-  crow.input[1].mode("change", 4.5, 0.25, "rising")
+  crow.input[1].change = process_crow_first_input
+  crow.input[1].mode("change", 4.5, 0.25, "both")
+  crow.input[2].change = process_crow_second_input
+  crow.input[2].mode("change", 4.5, 0.25, "both")
 end
 
 function init_softcut()
@@ -1042,9 +1098,21 @@ end
 function update_dispersion_ui()
   for i = 1, 64 do
     if flip_coin(dispersion_factor()) then
-      dispersion_ui_brightnesses[i] = 15
+      dispersion_ui_brightnesses[i] = negative_dispersion() and 1 or 15
     else
-      dispersion_ui_brightnesses[i] = util.clamp(dispersion_ui_brightnesses[i] - 1, 0, 15)
+      current_brightness = dispersion_ui_brightnesses[i]
+      
+      if negative_dispersion() then
+        if current_brightness == 0 or current_brightness == 15 then
+          new_brightness = 0
+        else
+          new_brightness = current_brightness + 1
+        end
+      else
+        new_brightness = math.max(current_brightness - 1, 0)
+      end
+      
+      dispersion_ui_brightnesses[i] = new_brightness
     end
   end
 end
@@ -1241,20 +1309,25 @@ function smoothly_make_tides()
     -- smoothness by splitting up the most time-intensive steps. 
     -- we could split it further but currently smoothing_factor 
     -- bottoms out at 2.
-    if smoothing_counter == util.round(smoothing_factor / 2) then
+    if smoothing_counter == 0 then
       make_tides_part_1()
+      update_buoy_depths()
     end
     
-    if smoothing_counter == 0 then
+    if smoothing_counter == util.round(smoothing_factor / 2) then
       make_tides_part_2()
-
-      update_buoy_depths()
     end
     
     if params:get("smoothing") == 2 or smoothing_counter == 0 then
       redraw_lights()
     end
   end
+end
+
+function reset_tides()
+  particles = {}
+  tide_interval_counter = 0
+  force_tide_update_next_tick()
 end
 
 function update_buoy_depths()
@@ -1268,11 +1341,6 @@ function update_buoy_depths()
 end
 
 function make_tides_part_1()
-  old_grid_lighting = deep_copy(new_grid_lighting)
-  disperse()
-end
-
-function make_tides_part_2()
   roll_forward()
   update_angle_gaps()
   
@@ -1286,7 +1354,12 @@ function make_tides_part_2()
 
   velocity_averaging()
   particles_to_tide_depths()
+  old_grid_lighting = deep_copy(new_grid_lighting)
   tide_depths_to_lighting()
+end
+
+function make_tides_part_2()
+  disperse()
 end
 
 function choose_clumping_factor()
@@ -1364,8 +1437,15 @@ function disperse()
       if not is_piling(x + direction.x, y + direction.y) then
         density_diff = density - find_in_grid(x + direction.x, y + direction.y, particle_counts, density)
         
-        if (density_diff >= (particle.clump_size * 2)) and flip_coin(dispersion_factor(), density_diff) then
-          table.insert(narrowed_dispersion_directions, direction)
+        if negative_dispersion() then
+          density_diff = -density_diff
+          if density_diff >= 1 and flip_coin(dispersion_factor(), density_diff) then
+            table.insert(narrowed_dispersion_directions, direction)
+          end
+        else
+          if (density_diff >= (particle.clump_size * 2)) and flip_coin(dispersion_factor(), density_diff) then
+            table.insert(narrowed_dispersion_directions, direction)
+          end
         end
       end
     end
@@ -1379,7 +1459,8 @@ function disperse()
       particle.y_pos = new_y
       
       density = particle_counts[y][x]
-      density_diff = density - find_in_grid(new_x, new_y, particle_counts, density - 1)
+      -- take absolute value to support negative dispersion use cases
+      density_diff = math.abs(density - find_in_grid(new_x, new_y, particle_counts, density - 1))
       particle.x_vel = particle.x_vel + (disperse_direction.x * DISPERSION_VELOCITY_FACTOR * density_diff)
       particle.y_vel = particle.y_vel + (disperse_direction.y * DISPERSION_VELOCITY_FACTOR * density_diff)
 
@@ -1869,8 +1950,12 @@ function list_shuffle(tbl)
   return tbl
 end
 
+function negative_dispersion()
+  return params:get("dispersion") < 0
+end
+
 function dispersion_factor()
-  return DISPERSION_MULTIPLE * params:get("dispersion")
+  return math.abs(DISPERSION_MULTIPLE * params:get("dispersion"))
 end
 
 function deep_copy(obj)
@@ -2459,7 +2544,9 @@ function a.delta(n, d)
   elseif n == 3 then
     params:delta("angle", d * 0.1)
   elseif n == 4 then
-    params:delta("dispersion", d * 0.01)
+    -- we use a shadow param instead of setting dispersion directly to create a dead zone
+    dispersion_shadow_param = util.clamp(dispersion_shadow_param + d, -2750, 2750)
+    update_dispersion_param()
   end
   
   redraw_arc_lights()
