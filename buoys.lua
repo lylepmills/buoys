@@ -1,12 +1,14 @@
--- pilings v2
--- first version of piling collisions modeling
+-- pilings
+-- velocity averaging + dispersion are implemented
+-- adding a piling clears particles in that spot
+-- piling drawings on norns screen
 
 RUN = true
 
 MIN_LIGHTING = 1
 GRID_HEIGHT = 8
 GRID_WIDTH = 16
-TIDE_GAP = 10
+TIDE_GAP = 25
 TIDE_HEIGHT = 5
 MAX_BRIGHTNESS = 15
 -- shape is defined right to left
@@ -15,6 +17,9 @@ ADVANCE_TIME = 0.15
 SMOOTHING_FACTOR = 4
 COLLISION_OVERALL_DAMPING = 0.2
 COLLISION_DIRECTIONAL_DAMPING = 0.5
+VELOCITY_AVERAGING_FACTOR = 0.6
+DISPERSION_FACTOR = 0.005
+POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
 
 g = grid.connect()
 
@@ -33,7 +38,8 @@ end
 
 g.key = function(x, y, z)
   if z == 1 then
-    pilings[y][x] = 1 - pilings[y][x]
+    pilings[y][x] = is_piling(x, y) and 0 or 1
+    clear_particles(x, y)
   end
 end
 
@@ -43,11 +49,16 @@ function smoothly_make_tides()
     make_tides()
   end
   
+  redraw_screen()
   redraw_lights()
 end
 
 function make_tides()
   old_grid_lighting = deep_copy(new_grid_lighting)
+  -- shuffling particles makes processes that depend on a random order work,
+  -- like disperse()
+  list_shuffle(particles)
+  disperse()
   roll_forward()
   
   tide_interval_counter = tide_interval_counter % (TIDE_GAP + #TIDE_SHAPE) + 1
@@ -55,25 +66,65 @@ function make_tides()
     new_tide(tide_interval_counter)
   end
   
+  velocity_averaging()
   particles_to_lighting()
 end
 
 function new_tide(position)
-  for i = 1, GRID_HEIGHT do
-    for j = 1, TIDE_SHAPE[position] do
+  for y = 1, GRID_HEIGHT do
+    for _ = 1, TIDE_SHAPE[position] do
       particle = {}
       particle.x_pos = 1
       particle.x_vel = 1.0
-      particle.y_pos = i
+      particle.y_pos = y
       particle.y_vel = 0.0
       
-      if not is_piling(1, i) then
+      if not is_piling(1, y) then
         table.insert(particles, particle)
       end
     end
   end
 end
 
+-- move particles from areas of higher density to lower
+-- (not allowing dispersion outside the grid)
+function disperse()
+  particle_counts = fresh_grid()
+  for _, particle in ipairs(particles) do
+    x, y = particle.x_pos, particle.y_pos
+    particle_counts[y][x] = particle_counts[y][x] + 1
+  end
+  
+  for _, particle in ipairs(particles) do
+    x, y = particle.x_pos, particle.y_pos
+    density = particle_counts[y][x]
+    narrowed_dispersion_directions = {}
+    
+    for _, direction in ipairs(POTENTIAL_DISPERSION_DIRECTIONS) do
+      if not is_piling(x + direction.x, y + direction.y) then
+        density_diff = density - find_in_grid(x + direction.x, y + direction.y, particle_counts, density)
+        
+        if density_diff > 1 and flip_coin(DISPERSION_FACTOR, density_diff) then
+          table.insert(narrowed_dispersion_directions, direction)
+        end
+      end
+    end
+  
+    if #narrowed_dispersion_directions > 0 then
+      list_shuffle(narrowed_dispersion_directions)
+      disperse_direction = narrowed_dispersion_directions[1]
+      new_x = x + disperse_direction.x
+      new_y = y + disperse_direction.y
+      particle.x_pos = new_x
+      particle.y_pos = new_y
+      
+      particle_counts[y][x] = particle_counts[y][x] - 1
+      particle_counts[new_y][new_x] = particle_counts[new_y][new_x] + 1
+    end
+  end
+end
+
+-- advance particles based on starting velocities and collisions with pilings
 function roll_forward()
   new_particles = {}
   for _, particle in ipairs(particles) do
@@ -134,6 +185,41 @@ function roll_forward()
   particles = new_particles
 end
 
+function velocity_averaging()
+  x_vel_sums = fresh_grid()
+  y_vel_sums = fresh_grid()
+  particle_counts = fresh_grid()
+  for _, particle in ipairs(particles) do
+    x, y = particle.x_pos, particle.y_pos
+    x_vel_sums[y][x] = x_vel_sums[y][x] + particle.x_vel
+    y_vel_sums[y][x] = y_vel_sums[y][x] + particle.y_vel
+    particle_counts[y][x] = particle_counts[y][x] + 1
+  end
+  
+  for _, particle in ipairs(particles) do
+    x, y = particle.x_pos, particle.y_pos
+    x_vel_avg = x_vel_sums[y][x] / particle_counts[y][x]
+    y_vel_avg = y_vel_sums[y][x] / particle_counts[y][x]
+    x_vel_diff = x_vel_avg - particle.x_vel
+    y_vel_diff = y_vel_avg - particle.y_vel
+    
+    particle.x_vel = particle.x_vel + (x_vel_diff * VELOCITY_AVERAGING_FACTOR)
+    particle.y_vel = particle.y_vel + (y_vel_diff * VELOCITY_AVERAGING_FACTOR)
+  end
+end
+
+function clear_particles(x, y)
+  new_particles = {}
+  
+  for _, particle in ipairs(particles) do
+    if particle.x_pos ~= x or particle.y_pos ~= y then
+      table.insert(new_particles, particle)
+    end
+  end
+  
+  particles = new_particles
+end
+
 function particles_to_lighting()
   new_particles = {}
   new_grid_lighting = fresh_grid(MIN_LIGHTING)
@@ -153,40 +239,61 @@ function particles_to_lighting()
 end
 
 function is_piling(x, y)
+  return find_in_grid(x, y, pilings, 0) ~= 0
+end
+
+function find_in_grid(x, y, grid, default)
   if x < 1 or x > GRID_WIDTH or y < 1 or y > GRID_HEIGHT then
-    return false
+    return default
   end
   
-  return pilings[y][x] ~= 0
+  return grid[y][x]
 end
 
 function grid_transition(proportion)
   result = fresh_grid()
-
-  for i = 1, GRID_HEIGHT do
-    for j = 1, GRID_WIDTH do
-      lighting_difference = new_grid_lighting[i][j] - old_grid_lighting[i][j]
-      result[i][j] = round(old_grid_lighting[i][j] + (lighting_difference * proportion))
+  
+  for x = 1, GRID_WIDTH do
+    for y = 1, GRID_HEIGHT do
+      lighting_difference = new_grid_lighting[y][x] - old_grid_lighting[y][x]
+      result[y][x] = round(old_grid_lighting[y][x] + (lighting_difference * proportion))
     end
   end
   
   return result
 end
 
+function redraw_screen()
+  screen.clear()
+  screen.aa(1)
+  screen.level(15)
+  
+  for x = 1, GRID_WIDTH do
+    for y = 1, GRID_HEIGHT do
+      if is_piling(x, y) then
+        screen.circle(x * 8 - 4, y * 8 - 4, 3.5)
+        screen.fill()
+      end
+    end
+  end
+  
+  screen.update()
+end
+
 function redraw_lights()
   grid_lighting = grid_transition(smoothing_counter / SMOOTHING_FACTOR)
   
-  for i = 1, GRID_HEIGHT do
-    for j = 1, GRID_WIDTH do
-      brightness = is_piling(j, i) and 0 or grid_lighting[i][j]
-      g:led(j, i, brightness)
+  for x = 1, GRID_WIDTH do
+    for y = 1, GRID_HEIGHT do
+      brightness = is_piling(x, y) and 0 or grid_lighting[y][x]
+      g:led(x, y, brightness)
     end
   end
   g:refresh()
 end
 
-function fresh_grid(brightness)
-  b = brightness or 0
+function fresh_grid(b)
+  b = b or 0
   return {
     {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
     {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
@@ -199,9 +306,23 @@ function fresh_grid(brightness)
   }
 end
 
-function flip_coin(probability)
+-- probability a fair coin flip is heads
+-- "probability" - biases coin to return heads with given probability
+-- "times" - with this many flips, the coin came up at least once
+function flip_coin(probability, times)
   p = probability or 0.5
-  return math.random() < p
+  times = times or 1
+  adjusted_p = 1 - (1 - p) ^ times
+  return math.random() < adjusted_p
+end
+
+function list_shuffle(tbl)
+  local size = #tbl
+  for i = size, 1, -1 do
+    local rand = math.random(i)
+    tbl[i], tbl[rand] = tbl[rand], tbl[i]
+  end
+  return tbl
 end
 
 function round(num)
