@@ -1,5 +1,5 @@
--- pilings_v27.lua
--- extended buoy params for zenith/nadir points
+-- pilings_v28.lua
+-- crow outputs, crow inputs pt 1
 
 -- TODO LIST
 -- tune defaults
@@ -20,9 +20,6 @@
 -- figure out how we're going to do slews - will they sound right for things like filtering?
 -- midi CC outputs, midi sync. midi note outputs - how would that work with velocity and such?
 ---- https://github.com/markwheeler/changes/blob/main/changes.lua
--- crow support
----- 4 cv outs (could also have triggers for crossing thresholds)
----- 1 clock in, 1 assignable CV param?
 -- use util methods where possible
 -- use controlspecs more?
 -- check display logic for buoys in terms of both grid lights and norns display, seems to be some inconsistencies
@@ -34,6 +31,8 @@
 -- clocks?
 ---- https://vimeo.com/416730766
 -- negative rates
+-- organize buoy params into a two-layer nested menu?
+-- protect against multiple buoys with the same crow output?
 
 
 -- IDEAS FOR LATER VERSIONS
@@ -43,6 +42,7 @@
 --    (https://llllllll.co/t/norns-2-0-softcut/20550/176)
 -- 4. zenith/nadir rate multipliers?
 --    (would require new approach to determining when sound is finished)
+-- 5. use second crow input as assignable CV control
 
 -- ACKNOWLEDGEMENTS
 -- I borrowed some file/folder loading logic from Timber Player, thanks @markeats.
@@ -74,11 +74,14 @@ COLLISION_DIRECTIONAL_DAMPING = 0.5
 VELOCITY_AVERAGING_FACTOR = 0.6
 DISPERSION_VELOCITY_FACTOR = 0.1
 SAMPLE_SPACING_BUFFER_TIME = 0.5
+MIN_TIDE_ADVANCE_TIME = 0.1
 LONG_PRESS_TIME = 1.0
 BACKGROUND_METRO_TIME = 0.1
 POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
 META_MODE_KEYS = { { x=1, y=1 }, { x=1, y=8 }, { x=16, y=1 }, { x=16, y=8 } }
 META_MODE_OPTIONS = { "choose sample folder", "clear inactive buoys", "save state", "load state", "exit" }
+NUM_CROW_CLOCKS_PER_CYCLE = 8
+ACCEPTABLE_CLOCK_DRIFT = 0.01
 
 function sound_option_formatter(value)
   if value == 0 then
@@ -368,20 +371,87 @@ all_buoy_options = {
     option_step_value = 1,
     formatter = zero_is_none_formatter,
   },
+  {
+    name = "crow output",
+    default_value = 0,
+    option_range = {0, 4},
+    option_step_value = 1,
+    formatter = zero_is_none_formatter,
+    crow_only = true,
+  },
+  {
+    name = "crow output mode",
+    default_value = 1,
+    options = {"voltage", "trigger", "gate"},
+    crow_only = true,
+  },
+  {
+    name = "zenith crow voltage",
+    default_value = 8.0,
+    option_range = {-5.0, 10.0},
+    option_step_value = 0.01,
+    crow_only = true,
+  },
+  {
+    name = "nadir crow voltage",
+    default_value = 0.0,
+    option_range = {-5.0, 10.0},
+    option_step_value = 0.01,
+    crow_only = true,
+  },
+  {
+    name = "crow voltage slew",
+    default_value = -0.01,
+    option_range = {-0.01, 5.0},
+    option_step_value = 0.01,
+    formatter = negative_is_auto_formatter,
+    extended_only = true,
+    crow_only = true,
+  },
+  {
+    name = "crow zenith point",
+    default_value = 14,
+    option_range = {"crow nadir point", 14},
+    option_step_value = 1,
+    extended_only = true,
+    crow_only = true,
+  },
+  {
+    name = "crow nadir point",
+    default_value = 0,
+    option_range = {0, "crow zenith point"},
+    option_step_value = 1,
+    extended_only = true,
+    crow_only = true,
+  },
+  {
+    name = "crow t/g threshold",
+    default_value = 8,
+    option_range = {0, 15},
+    option_step_value = 1,
+    formatter = zero_is_none_formatter,
+  },
 }
 
 function buoy_options()
-  if params:get("extended_buoy_params") == 2 then
-    return all_buoy_options
-  end
+  show_extended_params = params:get("extended_buoy_params") == 2
+  show_crow_params = crow.connected()
   
-  new_option_index = 1
   result = {}
 
   for i = 1, #all_buoy_options do
-    if not all_buoy_options[i].extended_only then
-      result[new_option_index] = all_buoy_options[i]
-      new_option_index = new_option_index + 1
+    include_option = true
+    
+    if all_buoy_options[i].extended_only then
+      include_option = include_option and show_extended_params
+    end
+    
+    if all_buoy_options[i].crow_only then
+      include_option = include_option and show_crow_params
+    end
+    
+    if include_option then
+      table.insert(result, all_buoy_options[i])
     end
   end
   
@@ -434,6 +504,7 @@ function init()
   end
 
   init_softcut()
+  init_crow()
   
   if RUN then
     tide_maker = metro.init(smoothly_make_tides, tide_advance_time / smoothing_factor)
@@ -506,6 +577,57 @@ function init_params()
   params:add{ type = "number", id = "max_depth", name = "max depth", min = 8, max = 14, default = 14, action = max_depth_updated_action }
   params:add{ type = "option", id = "smoothing", name = "visual smoothing", options = { "on", "off" } }
   params:add{ type = "option", id = "extended_buoy_params", name = "extended buoy params", options = { "off", "on" } }
+end
+
+-- TODONOW - finish
+function process_crow_clock(v)
+  current_time = util.time()
+  
+  if not last_crow_clock_cycle_began then
+    last_crow_clock_cycle_began = current_time
+    return
+  end
+  
+  crow_clock_cycle_counter = crow_clock_cycle_counter + 1
+  
+  if crow_clock_cycle_counter % NUM_CROW_CLOCKS_PER_CYCLE ~= 0 then
+    return
+  end
+  
+  expected_time = last_crow_clock_cycle_began + (tide_advance_time * crow_clock_cycle_counter)
+  drift = current_time - expected_time
+  if math.abs(drift) < ACCEPTABLE_CLOCK_DRIFT then
+    -- clock timing can be imprecise - this approach strikes a compromise between quickly
+    -- adapting to changes in clock rate and making too many updates to the tide_maker metro, 
+    -- which has it's own disadvantages
+    return
+  end
+  
+  -- TODONOW - do something to throw out very old clocks if we stop 
+  -- receiving them from crow for a while
+  
+  clock_cycle_elapsed_time = current_time - last_crow_clock_cycle_began
+  clock_delta = clock_cycle_elapsed_time / crow_clock_cycle_counter
+  
+  crow_clock_cycle_counter = 0
+  last_crow_clock_cycle_began = current_time
+
+  -- TODONOW - offer a clock multiplier/divider option in the params
+  if clock_delta < MIN_TIDE_ADVANCE_TIME then
+    -- TODONOW - issue warning about too fast of a clock being received
+  else
+    -- TODONOW - reset smoothing counter when resetting clock
+    -- (and figure out smoothing counter stuff more generally)
+    tide_advance_time = clock_delta
+    update_advance_time()
+  end
+end
+
+function init_crow()
+  last_crow_clock_cycle_began = nil
+  crow_clock_cycle_counter = 0
+  crow.input[1].change = process_crow_clock
+  crow.input[1].mode("change", 4.5, 0.25, "rising")
 end
 
 function init_softcut()
@@ -694,6 +816,7 @@ function update_advance_time()
     end
   end
   
+  -- TODONOW - update smoothing_counter accordingly
   smoothing_factor = util.clamp(util.round(tide_advance_time * 20), 2, 8)
   tide_maker:start(tide_advance_time / smoothing_factor)
   advance_time_dirty = false
@@ -766,8 +889,9 @@ function enc(n, d)
     meta_mode_option_index = util.clamp(meta_mode_option_index + d, 1, #META_MODE_OPTIONS)
   elseif not editing_buoys() then
     if n == 2 then
+      -- TODONOW - if crow clock has been received recently, offer a multiplier menu instead
       tide_info_overlay_countdown = 10
-      tide_advance_time = math.max(tide_advance_time + d * 0.001, 0.1)
+      tide_advance_time = util.round(math.max(tide_advance_time + d * 0.001, MIN_TIDE_ADVANCE_TIME), 0.001)
       advance_time_dirty = true
     end
     if n == 3 then
@@ -1458,6 +1582,7 @@ function Buoy:update_depth(new_depth)
   self:update_volume()
   self:update_panning()
   self:update_filtering()
+  self:update_crow()
   
   if self:newly_exceeds_play_threshold() then
     self:grab_softcut_buffer()
@@ -1649,6 +1774,66 @@ function Buoy:update_panning()
   htp = self.options["zenith pan"]
   new_pan = ltp + ((htp - ltp) * self:tide_ratio("pan"))
   softcut.pan(self.softcut_buffer, new_pan)
+end
+
+function Buoy:update_crow()
+  output_index = self.options["crow output"]
+  if output_index < 1 then
+    return
+  end
+  
+  if self.options["crow output mode"] == 1 then
+    self:update_crow_voltage()
+  elseif self.options["crow output mode"] == 2 then
+    self:update_crow_trigger()
+  else
+    self:update_crow_gate()
+  end
+end
+
+function Buoy:update_crow_trigger()
+  output_index = self.options["crow output"]
+  trigger_threshold = self.options["crow t/g threshold"]
+  if trigger_threshold < 1 then
+    return
+  end
+  
+  if (self.previous_depth < trigger_threshold) and (self.depth >= trigger_threshold) then
+    crow.output[output_index].slew = 0
+    crow.output[output_index].volts = 8
+    crow.output[output_index].slew = 0.1
+    crow.output[output_index].volts = 0
+  end
+end
+
+function Buoy:update_crow_gate()
+  output_index = self.options["crow output"]
+  gate_threshold = self.options["crow t/g threshold"]
+  if gate_threshold < 1 then
+    return
+  end
+  
+  new_voltage = (self.depth >= gate_threshold) and 8 or 0
+  crow.output[output_index].slew = 0
+  crow.output[output_index].volts = new_voltage
+end
+
+function Buoy:update_crow_voltage()
+  output_index = self.options["crow output"]
+  slew_time = self.options["crow voltage slew"]
+  
+  -- "auto" slew
+  if slew_time < 0 then
+    slew_time = tide_advance_time
+  end
+  
+  crow.output[output_index].slew = slew_time
+  
+  ncv = self.options["nadir crow voltage"]
+  zcv = self.options["zenith crow voltage"]
+  new_voltage = ncv + ((zcv - ncv) * self:tide_ratio("crow"))
+  
+  crow.output[output_index].volts = new_voltage
 end
 
 function Buoy:update_filtering()
