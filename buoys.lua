@@ -1,5 +1,5 @@
--- pilings_v9.lua
--- added v0 audio/softcut functionality
+-- pilings_v10.lua
+-- buoy parameter editing
 
 RUN = true
 SHOW_GRID = true
@@ -18,7 +18,6 @@ DISPERSION_VELOCITY_FACTOR = 0.1
 LONG_PRESS_TIME = 1.0
 GRID_KEY_PRESS_METRO_TIME = 0.1
 POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
-TEST_RATES = {0.5, 1.0, 2.0, 0.5, 1.0, 2.0}
 
 -- TODO - could these be tied to the rate at which waves are moving?
 RATE_SLEW = 0.1
@@ -29,27 +28,39 @@ AUDIO_FILE = _path.dust.."audio/tehn/drumlite.wav"
 -- AUDIO_FILE = _path.dust.."audio/hermit-leaves.wav"
 NUM_SOFTCUT_BUFFERS = 6
 
+function offset_formatter(value)
+  if value > 0 then
+    return "+"..value
+  end
+  
+  return tostring(value)
+end
+
 BUOY_OPTIONS = {
   -- sample
   -- looping?
+  -- uninterruptible?
   -- depth envelope response
   ---- min threshold
   ---- min/max values
   ---- volume
   ---- other options?
-  ["octave offset"] = {
+  {
+    name = "octave offset",
     default_value = 0,
     option_range = {-2, 2},
     option_step_value = 1,
     formatter = offset_formatter,
-  },
-  ["semitone offset"] = {
+  }, 
+  {
+    name = "semitone offset",
     default_value = 0,
     option_range = {-7, 7},
     option_step_value = 1,
     formatter = offset_formatter,
-  },
-  ["cent offset"] = {
+  }, 
+  {
+    name = "cent offset",
     default_value = 0,
     option_range = {-50, 50},
     option_step_value = 1,
@@ -63,20 +74,22 @@ g = grid.connect()
 function init()
   init_params()
   
-  pilings = fresh_grid(0)
   particles = {}
-  held_grid_keys = fresh_grid(0)
+  pilings = fresh_grid(0)
   buoys = fresh_grid(nil)
-  
-  displaying_buoys = false
 
-  run = true
+  held_grid_keys = fresh_grid(0)
   
+  run = true
+  displaying_buoys = false
+  buoy_editing_option_scroll_index = 1
+
   old_grid_lighting = fresh_grid(params:get("min_bright"))
   new_grid_lighting = fresh_grid(params:get("min_bright"))
   current_angle_gaps = angle_gaps()
   tide_interval_counter = 0
   smoothing_counter = 0
+  -- TODO - make this a method so it accounts for some taking longer than others
   next_softcut_buffer = 1
   
   init_softcut()
@@ -103,6 +116,7 @@ function init_params()
   params:add_separator()
   params:add{ type = "number", id = "min_bright", name = "min brightness", min = 1, max = 3, default = 1 }
   params:add{ type = "number", id = "max_bright", name = "max brightness", min = 10, max = 15, default = 15 }
+  -- TODO - smoothing should not be a param, and it should not affect the perceived scroll speed
   params:add{ type = "number", id = "smoothing", name = "smoothing", min = 3, max = 6, default = 4 }
 end
 
@@ -141,8 +155,7 @@ function init_softcut()
     softcut.loop_start(i, 1.0)
     softcut.loop_end(i, 7.0)
     softcut.position(i, 1.0)
-    -- softcut.rate(i, 1.0)
-    softcut.rate(i, TEST_RATES[i])
+    softcut.rate(i, 1.0)
     buffer_buoy_map[i] = nil
 
     softcut.rate_slew_time(i, RATE_SLEW)
@@ -154,24 +167,28 @@ function update_held_grid_keys()
   keys_held = grid_keys_held()
   newly_editing_buoys = false
   
-  for _, key_held in ipairs(keys_held) do
+  for _, key_held in pairs(keys_held) do
     x, y = key_held[1], key_held[2]
     -- TODO - should only increment counters if we're not already editing buoys
     held_grid_keys[y][x] = held_grid_keys[y][x] + 1
     if held_grid_keys[y][x] > (LONG_PRESS_TIME / GRID_KEY_PRESS_METRO_TIME) then
       newly_editing_buoys = true
+      longest_held_key = {x, y}
       held_grid_keys = fresh_grid(0)
       break
     end
   end
   
   if newly_editing_buoys then
-    for _, key_held in ipairs(keys_held) do
+    for _, key_held in pairs(keys_held) do
       x, y = key_held[1], key_held[2]
       buoys[y][x] = buoys[y][x] or Buoy:new()
       buoys[y][x].being_edited = true
       buoys[y][x].active = true
     end
+    
+    buoy_editing_prototype = buoys[longest_held_key[2]][longest_held_key[1]]
+    print("buoy_editing_prototype: "..longest_held_key[2].." "..longest_held_key[1])
     
     redraw_screen()
   end
@@ -220,16 +237,37 @@ function key(n, z)
   redraw_lights()
 end
 
-function degree_formatter(tbl)
-  return tbl.value .. " degrees"
-end
-
-function offset_formatter(value)
-  if value > 0 then
-    return "+"..value
+function enc(n, d)
+  if editing_buoys() then
+    if n == 2 then
+      buoy_editing_option_scroll_index = util.clamp(buoy_editing_option_scroll_index + d, 1, #BUOY_OPTIONS)
+    end
+    
+    if n == 3 then
+      option_config = BUOY_OPTIONS[buoy_editing_option_scroll_index]
+      
+      old_value = buoy_editing_prototype.options[option_config.name]
+      new_value = util.clamp(
+        old_value + (d * option_config.option_step_value),
+        option_config.option_range[1],
+        option_config.option_range[2])
+      
+      for x = 1, g.cols do
+        for y = 1, g.rows do
+          if buoys[y][x] and buoys[y][x].being_edited then
+            print("buoy being edited "..x.." "..y)
+            buoys[y][x].options[option_config.name] = new_value
+          end
+        end
+      end
+    end
   end
   
-  return tostring(value)
+  redraw_screen()
+end
+
+function degree_formatter(tbl)
+  return tbl.value .. " degrees"
 end
 
 function smoothly_make_tides()
@@ -328,7 +366,7 @@ function disperse()
     density = particle_counts[y][x]
     narrowed_dispersion_directions = {}
     
-    for _, direction in ipairs(POTENTIAL_DISPERSION_DIRECTIONS) do
+    for _, direction in pairs(POTENTIAL_DISPERSION_DIRECTIONS) do
       if not is_piling(x + direction.x, y + direction.y) then
         density_diff = density - find_in_grid(x + direction.x, y + direction.y, particle_counts, density)
         
@@ -503,10 +541,13 @@ function grid_transition(proportion)
   return result
 end
 
+-- TODO - standard seems to be to just call this redraw()
 function redraw_screen()
   screen.clear()
   screen.aa(1)
-  screen.font_face(24)
+  screen.font_face(1)
+  screen.font_size(8)
+  screen.level(15)
   
   if editing_buoys() then
     redraw_edit_buoy_screen()
@@ -517,42 +558,25 @@ function redraw_screen()
   screen.update()
 end
 
--- TODO - a buoy line drawing would be cool here
 function redraw_edit_buoy_screen()
-  height = 0
-  screen.level(15)
-  screen.font_size(10)
-  
-  screen.move(64, 28)
-  screen.text_center("EDITING BUOYS")
-  
-  -- TODO - for some reason, not seeing anything on the screen from this
-  for option_name, option_config in ipairs(BUOY_OPTIONS) do
-    print("processing options")
-    -- self.options[option_name] = option_config.default_value
-    screen.move(64, height)
-    -- screen.text(option_name)
-    screen.text_center("EDITING BUOYS")
+  height = 40 - (buoy_editing_option_scroll_index * 10)
+
+  for option_index, option_config in pairs(BUOY_OPTIONS) do
+    if option_index == buoy_editing_option_scroll_index then
+      screen.level(15)
+    else
+      screen.level(5)
+    end
+    
+    screen.move(0, height)
+    screen.text(option_config.name)
+    
+    buoy_value = buoy_editing_prototype.options[option_config.name]
+    screen.move(128, height)
+    screen.text_right(option_config.formatter(buoy_value))
     
     height = height + 10
   end
-  
-  
-  
-  -- BUOY_OPTIONS = {
-  -- -- sample
-  -- -- looping?
-  -- -- depth envelope response
-  -- ---- min threshold
-  -- ---- min/max values
-  -- ---- volume
-  -- ---- other options?
-  -- ["octave offset"] = {
-  --   default_value = 0,
-  --   option_range = {-2, 2},
-  --   option_step_value = 1,
-  --   formatter = offset_formatter,
-  -- },
 end
 
 function redraw_regular_screen()
@@ -667,7 +691,6 @@ Buoy = {
   previous_depth = 0,
   depth = 0,
   softcut_buffer = -1,
-  options = {},
 }
 
 function Buoy:new(o)
@@ -675,8 +698,9 @@ function Buoy:new(o)
   setmetatable(o, self)
   self.__index = self
   
-  for option_name, option_config in ipairs(BUOY_OPTIONS) do
-    self.options[option_name] = option_config.default_value
+  o.options = {}
+  for _, option_config in pairs(BUOY_OPTIONS) do
+    o.options[option_config.name] = option_config.default_value
   end
   
   return o
