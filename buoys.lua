@@ -1,44 +1,72 @@
 -- pilings
--- flume mode added
--- wave angles added
+-- added pausing (button 3)
+-- began adding parameters
 
 RUN = true
 
-WAVE_ANGLE = -45  -- range -60, 60, default 0
-FLUME_MODE = false
+DISPERSION_MULTIPLE = 0.001
 
-MIN_LIGHTING = 2      -- range 1..3, default 2
-GRID_HEIGHT = 8
-GRID_WIDTH = 16
 TIDE_GAP = 25
 TIDE_HEIGHT = 5
-MAX_BRIGHTNESS = 15
 -- shape is defined right to left
 TIDE_SHAPE = {1, 3, 6, 10, 9, 8, 6, 4, 1}
-ADVANCE_TIME = 0.15
-SMOOTHING_FACTOR = 4
 COLLISION_OVERALL_DAMPING = 0.2
 COLLISION_DIRECTIONAL_DAMPING = 0.5
 VELOCITY_AVERAGING_FACTOR = 0.6
-DISPERSION_FACTOR = 0.005
 POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
 
 g = grid.connect()
 
 function init()
+  params = paramset.new()
+  
+  params:add{ type = "option", id = "channel_style", name = "channel style", options = { "open", "flume" } }
+  params:add_separator()
+  params:add{ type = "number", id = "angle", name = "wave angle", min = -60, max = 60, default = 0, formatter = degree_formatter }
+  cs_advance_time = controlspec.new(0.05, 1.0, "lin", 0, 0.2, "seconds")
+  params:add{ type = "control", id = "advance_time", name = "advance time", controlspec = cs_advance_time, action = update_advance_time }
+  params:add_separator()
+  params:add{ type = "number", id = "dispersion", name = "dispersion", min = 0, max = 25, default = 10 }
+  params:add_separator()
+  params:add{ type = "number", id = "min_bright", name = "min brightness", min = 1, max = 3, default = 2 }
+  params:add{ type = "number", id = "max_bright", name = "max brightness", min = 10, max = 15, default = 15 }
+  params:add{ type = "number", id = "smoothing", name = "smoothing", min = 3, max = 6, default = 4 }
+  
+  -- params:add{type = "number", id = "midi_device", name = "MIDI Device", min = 1, max = 4, default = 1, action = function(value)
+  --   midi_in_device.event = nil
+  --   midi_in_device = midi.connect(value)
+  --   midi_in_device.event = midi_event
+  -- end}
+
   pilings = fresh_grid()
   particles = {}
+
+  run = true
   
-  old_grid_lighting = fresh_grid(MIN_LIGHTING)
-  new_grid_lighting = fresh_grid(MIN_LIGHTING)
+  old_grid_lighting = fresh_grid(params:get("min_bright"))
+  new_grid_lighting = fresh_grid(params:get("min_bright"))
   current_angle_gaps = angle_gaps()
   tide_interval_counter = 0
   smoothing_counter = 0
   
-  if RUN then 
-    tide_maker = metro.init(smoothly_make_tides, ADVANCE_TIME / SMOOTHING_FACTOR)
+  if RUN then
+    tide_maker = metro.init(smoothly_make_tides, params:get("advance_time") / params:get("smoothing"))
     tide_maker:start()
   end
+end
+
+function update_advance_time()
+  tide_maker:start(params:get("advance_time") / params:get("smoothing"))
+end
+
+function key(n, z)
+  if n == 3 and z == 1 then
+    run = not run
+  end
+end
+
+function degree_formatter(tbl)
+  return tbl.value .. " degrees"
 end
 
 g.key = function(x, y, z)
@@ -46,16 +74,21 @@ g.key = function(x, y, z)
     pilings[y][x] = is_piling(x, y) and 0 or 1
     clear_particles(x, y)
   end
+  
+  redraw_lights()
+  redraw_screen()
 end
 
 function smoothly_make_tides()
-  smoothing_counter = (smoothing_counter + 1) % SMOOTHING_FACTOR
-  if smoothing_counter == 0 then
-    make_tides()
+  if run then
+    smoothing_counter = (smoothing_counter + 1) % params:get("smoothing")
+    if smoothing_counter == 0 then
+      make_tides()
+    end
+    
+    redraw_screen()
+    redraw_lights()
   end
-  
-  redraw_screen()
-  redraw_lights()
 end
 
 function make_tides()
@@ -78,7 +111,7 @@ function make_tides()
 end
 
 function new_tide(position)
-  for y = 1, GRID_HEIGHT do
+  for y = 1, g.rows do
     num_new_particles = TIDE_SHAPE[position - current_angle_gaps[y]] or 0
     
     for _ = 1, num_new_particles do
@@ -96,11 +129,11 @@ function new_tide(position)
 end
 
 function angle_gaps()
-  distance = math.tan(degrees_to_radians(WAVE_ANGLE))
-  offset = math.abs(math.min(0, round((GRID_HEIGHT - 1) * distance)))
+  distance = math.tan(degrees_to_radians(params:get("angle")))
+  offset = math.abs(math.min(0, round((g.rows - 1) * distance)))
   
   result = {}
-  for i = 0, GRID_HEIGHT - 1 do
+  for i = 0, g.rows - 1 do
     table.insert(result, round(i * distance) + offset)
   end
   
@@ -131,7 +164,7 @@ function disperse()
       if not is_piling(x + direction.x, y + direction.y) then
         density_diff = density - find_in_grid(x + direction.x, y + direction.y, particle_counts, density)
         
-        if density_diff > 1 and flip_coin(DISPERSION_FACTOR, density_diff) then
+        if density_diff > 1 and flip_coin(dispersion_factor(), density_diff) then
           table.insert(narrowed_dispersion_directions, direction)
         end
       end
@@ -166,6 +199,7 @@ function roll_forward()
       -- x collision
       if is_piling(x + x_delta, y) then
         x_delta = 0
+        -- currently no way for a particle to actually change direction
         xv_delta = x_vel * COLLISION_DIRECTIONAL_DAMPING * -1
         yv_delta = math.abs(xv_delta) * (1 - COLLISION_OVERALL_DAMPING)
         
@@ -202,8 +236,8 @@ function roll_forward()
     particle.y_vel = y_vel + y_vel_delta
     
     -- discard particles outside the grid
-    if particle.x_pos >= 1 and particle.x_pos <= GRID_WIDTH then
-      if particle.y_pos >= 1 and particle.y_pos <= GRID_HEIGHT then
+    if particle.x_pos >= 1 and particle.x_pos <= g.cols then
+      if particle.y_pos >= 1 and particle.y_pos <= g.rows then
         table.insert(new_particles, particle)
       end
     end
@@ -249,12 +283,12 @@ end
 
 function particles_to_lighting()
   new_particles = {}
-  new_grid_lighting = fresh_grid(MIN_LIGHTING)
+  new_grid_lighting = fresh_grid(params:get("min_bright"))
   
   for _, particle in ipairs(particles) do
     x, y = particle.x_pos, particle.y_pos
 
-    if new_grid_lighting[y][x] < MAX_BRIGHTNESS then
+    if new_grid_lighting[y][x] < params:get("max_bright") then
       new_grid_lighting[y][x] = new_grid_lighting[y][x] + 1
       table.insert(new_particles, particle)
     else
@@ -266,14 +300,14 @@ function particles_to_lighting()
 end
 
 function is_piling(x, y)
-  if FLUME_MODE and (y < 1 or y > GRID_HEIGHT) then
+  if params:get("channel_style") == 2 and (y < 1 or y > g.rows) then
     return true
   end
   return find_in_grid(x, y, pilings, 0) ~= 0
 end
 
 function find_in_grid(x, y, grid, default)
-  if x < 1 or x > GRID_WIDTH or y < 1 or y > GRID_HEIGHT then
+  if x < 1 or x > g.cols or y < 1 or y > g.rows then
     return default
   end
   
@@ -283,8 +317,8 @@ end
 function grid_transition(proportion)
   result = fresh_grid()
   
-  for x = 1, GRID_WIDTH do
-    for y = 1, GRID_HEIGHT do
+  for x = 1, g.cols do
+    for y = 1, g.rows do
       lighting_difference = new_grid_lighting[y][x] - old_grid_lighting[y][x]
       result[y][x] = round(old_grid_lighting[y][x] + (lighting_difference * proportion))
     end
@@ -297,7 +331,7 @@ function redraw_screen()
   screen.clear()
   screen.aa(1)
   
-  if FLUME_MODE then
+  if params:get("channel_style") == 2 then
     screen.level(15)
     screen.rect(0, 0, 128, 1)
     screen.fill()
@@ -311,8 +345,8 @@ function redraw_screen()
   end
   
   screen.level(15)
-  for x = 1, GRID_WIDTH do
-    for y = 1, GRID_HEIGHT do
+  for x = 1, g.cols do
+    for y = 1, g.rows do
       if is_piling(x, y) then
         screen.circle(x * 8 - 4, y * 8 - 4, 3.4)
         screen.fill()
@@ -324,10 +358,10 @@ function redraw_screen()
 end
 
 function redraw_lights()
-  grid_lighting = grid_transition(smoothing_counter / SMOOTHING_FACTOR)
+  grid_lighting = grid_transition(smoothing_counter / params:get("smoothing"))
   
-  for x = 1, GRID_WIDTH do
-    for y = 1, GRID_HEIGHT do
+  for x = 1, g.cols do
+    for y = 1, g.rows do
       brightness = is_piling(x, y) and 0 or grid_lighting[y][x]
       g:led(x, y, brightness)
     end
@@ -372,10 +406,13 @@ function round(num)
   return math.floor(num + 0.5)
 end
 
+function dispersion_factor()
+  return DISPERSION_MULTIPLE * params:get("dispersion")
+end
+
 function deep_copy(obj)
   if type(obj) ~= 'table' then return obj end
   local res = {}
   for k, v in pairs(obj) do res[deep_copy(k)] = deep_copy(v) end
   return res
 end
-
