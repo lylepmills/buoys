@@ -1,5 +1,5 @@
--- pilings_v25.lua
--- wave sequencing part 2
+-- pilings_v26.lua
+-- various TODOS
 
 -- TODO LIST
 -- use local variables
@@ -12,10 +12,10 @@
 ---- excessive density could lead to faster speeds, much like IRL
 ---- optional overflow mode?
 -- could dispersion look better if it were more concentric instead of UDLR?
--- smoothing could/should be proportional to advance time
 -- some kind of estimation to make it faster when there are a lot of particles?
--- use E1 as a macro control?
--- wave sequencing?
+-- pick E1 use
+---- macro control?
+---- filtered noise volume (would have to write a SC engine for this)
 -- if wave depth can affect playhead position, that could be used for granular stuff
 -- have the sample start playing backward when the net velocity is backward (make this optional)
 -- figure out how we're going to do slews - will they sound right for things like filtering?
@@ -25,28 +25,31 @@
 ---- 1 clock in, 1 assignable CV param?
 -- use util methods where possible
 -- use controlspecs more?
--- meta mode
----- global state saving/loading
 -- check display logic for buoys in terms of both grid lights and norns display, seems to be some inconsistencies
 -- make a util method for all the places where we use the % operator in a weird way to constrain to a [1, x] range
+-- extended_only params
+---- specifiable zenith/nadir points for each sound param
+---- hysteresis for triggered thresholds?
+-- test midi mapping
 
 -- IDEAS FOR LATER VERSIONS
--- 1. maybe zenith/nadir volume ranges should extend beyond [0.0, 1.0]
---    so that you could e.g. have volume max out before reaching absolute max depth?
+-- 1. live input processing
 -- 2. support stereo samples
+-- 3. transparently support alternate sample rates
+--    (https://llllllll.co/t/norns-2-0-softcut/20550/176)
 
 -- ACKNOWLEDGEMENTS
 -- I borrowed some file/folder loading logic from Timber Player, thanks @markeats.
 
 fileselect = require "fileselect"
-tabutil = require "tabutil"
--- TODO - explicit require necessary?
+tabutil = require "tabutil"  -- TODO - remove when done
 
 RUN = true
 
 DISPERSION_MULTIPLE = 0.001
 
 ADVANCE_TIME = 0.2
+SMOOTHING_FACTOR = 4
 TIDE_GAP = 32
 -- sinces waves move from left to right, they 
 -- will appear flipped vs these definitions
@@ -68,7 +71,6 @@ SAMPLE_SPACING_BUFFER_TIME = 0.5
 LONG_PRESS_TIME = 1.0
 BACKGROUND_METRO_TIME = 0.1
 POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
-SMOOTHING_FACTOR = 4
 META_MODE_KEYS = { { x=1, y=1 }, { x=1, y=8 }, { x=16, y=1 }, { x=16, y=8 } }
 META_MODE_OPTIONS = { "choose sample folder", "clear inactive buoys", "save state", "load state", "exit" }
 
@@ -99,7 +101,7 @@ function panning_formatter(value)
   if value == 0.0 then
     return "C"
   elseif value < 0.0 then
-    return util.round(value * 100).."L"
+    return -util.round(value * 100).."L"
   else
     return util.round(value * 100).."R"
   end
@@ -123,15 +125,13 @@ end
 
 function file_select_finished_callback(full_file_path)
   file_select_active = false
-  if file ~= "cancel" then
+  if full_file_path ~= "cancel" then
     load_sound_folder(full_file_path)
   end
   
   exit_meta_mode()
 end
 
--- TODO - is there any way to just terminate at the folder view in fileselect
--- https://github.com/monome/norns/blob/main/lua/lib/fileselect.lua
 function load_sound_folder(full_file_path)
   softcut.buffer_clear_channel(1)
   sample_details = {}
@@ -153,10 +153,8 @@ end
 function load_sound(full_file_path)
   local _, samples, sample_rate = audio.file_info(full_file_path)
   local sample_duration = samples / sample_rate
-  -- TODO - does sample rate have to be 48000?
-  -- https://llllllll.co/t/norns-2-0-softcut/20550/176?u=lylem
   if sample_rate ~= 48000 then
-    return
+    sample_rate_warning_countdown = 30
   end
   
   if (next_sample_start_location + sample_duration) > softcut.BUFFER_SIZE then
@@ -191,10 +189,10 @@ function split_file_extension(filename)
 end
 
 function update_sound_options()
-  buoy_options[1].option_range = {0, #sample_details}
+  all_buoy_options[1].option_range = {0, #sample_details}
 end
 
-buoy_options = {
+all_buoy_options = {
   -- TODO
   -- attack/decay (auto vs controlled)
   -- depth envelope response
@@ -275,6 +273,24 @@ buoy_options = {
   },
 }
 
+function buoy_options()
+  if params:get("extended_buoy_params") == 2 then
+    return all_buoy_options
+  end
+  
+  new_option_index = 1
+  result = {}
+
+  for i = 1, #all_buoy_options do
+    if not all_buoy_options[i].extended_only then
+      result[new_option_index] = all_buoy_options[i]
+      new_option_index = new_option_index + 1
+    end
+  end
+  
+  return result
+end
+
 a = arc.connect()
 g = grid.connect()
 
@@ -289,21 +305,25 @@ function init()
   
   run = true
   displaying_buoys = false
+  advance_time_dirty = false
   buoy_editing_option_scroll_index = 1
   -- tide_shape_index can be fractional, indicating interpolation between shapes
-  tide_shape_index = 1
+  tide_shape_index = 1.0
   num_tide_shapes_in_sequence = 1
   tide_shapes = BASE_TIDE_SHAPES
   tide_gap = TIDE_GAP
   tide_advance_time = ADVANCE_TIME
+  smoothing_factor = SMOOTHING_FACTOR
 
   old_grid_lighting = fresh_grid(params:get("min_bright"))
   new_grid_lighting = fresh_grid(params:get("min_bright"))
   tide_depths = fresh_grid(0)
-  current_angle_gaps = angle_gaps()
+  current_angle_gaps = nil
+  update_angle_gaps()
   tide_interval_counter = 0
   smoothing_counter = 0
   tide_info_overlay_countdown = 0
+  sample_rate_warning_countdown = 0
   key_states = {0, 0, 0}
   was_editing_tides = false
   meta_mode = false
@@ -319,7 +339,7 @@ function init()
   init_softcut()
   
   if RUN then
-    tide_maker = metro.init(smoothly_make_tides, tide_advance_time / SMOOTHING_FACTOR)
+    tide_maker = metro.init(smoothly_make_tides, tide_advance_time / smoothing_factor)
     tide_maker:start()
     background_metro = metro.init(background_metro_tasks, BACKGROUND_METRO_TIME)
     background_metro:start()
@@ -362,8 +382,10 @@ function init_params()
   params:add{ type = "number", id = "dispersion", name = "dispersion", min = 0, max = 25, default = 10 }
   params:add_separator()
   params:add{ type = "number", id = "min_bright", name = "min brightness", min = 1, max = 3, default = 1 }
+  -- TODO - the wave editor still uses a max depth of 15, rectify those
   params:add{ type = "number", id = "max_depth", name = "max depth", min = 8, max = 14, default = 14, action = max_depth_updated_action }
   params:add{ type = "option", id = "smoothing", name = "visual smoothing", options = { "on", "off" } }
+  params:add{ type = "option", id = "extended_buoy_params", name = "extended buoy params", options = { "off", "on" } }
 end
 
 function init_softcut()
@@ -394,7 +416,17 @@ function background_metro_tasks()
   tide_info_overlay_expiring = tide_info_overlay_countdown == 1
   tide_info_overlay_countdown = math.max(tide_info_overlay_countdown - 1, 0)
   
-  if tide_info_overlay_expiring then
+  sample_rate_warning_expiring = sample_rate_warning_countdown == 1
+  sample_rate_warning_countdown = math.max(sample_rate_warning_countdown - 1, 0)
+  
+  if advance_time_dirty then
+    -- updating this synchronously instead of in a background process makes
+    -- the waves appear to slow/stop while the rate is being changed because
+    -- each update resets the metro
+    update_advance_time()
+  end
+  
+  if tide_info_overlay_expiring or sample_rate_warning_expiring then
     redraw_screen()
   end
 end
@@ -534,7 +566,9 @@ function grid_keys_held()
 end
 
 function update_advance_time()
-  tide_maker:start(tide_advance_time / SMOOTHING_FACTOR)
+  smoothing_factor = util.clamp(util.round(tide_advance_time * 20), 2, 15)
+  tide_maker:start(tide_advance_time / smoothing_factor)
+  advance_time_dirty = false
 end
 
 function clear_inactive_buoys()
@@ -561,6 +595,7 @@ function key(n, z)
       fileselect.enter(_path.audio, file_select_finished_callback)
     elseif meta_mode_option == "clear inactive buoys" then
       clear_inactive_buoys()
+      exit_meta_mode()
     elseif meta_mode_option == "save state" then
       -- TODO - save/load state logic
     elseif meta_mode_option == "load state" then
@@ -594,6 +629,10 @@ function displaying_tide_info_overlay()
   return tide_info_overlay_countdown > 0
 end
 
+function displaying_sample_rate_warning()
+  return sample_rate_warning_countdown > 0
+end
+
 function enc(n, d)
   if meta_mode then
     meta_mode_option_index = util.clamp(meta_mode_option_index + d, 1, #META_MODE_OPTIONS)
@@ -601,21 +640,19 @@ function enc(n, d)
     if n == 2 then
       tide_info_overlay_countdown = 10
       tide_advance_time = util.clamp(tide_advance_time + d * 0.001, 0.1, 1.0)
-      update_advance_time()
+      advance_time_dirty = true
     end
-    -- TODO - make less sensitive?
     if n == 3 then
       tide_info_overlay_countdown = 10
       tide_gap = math.max(tide_gap + d, 1)
     end
   else
     if n == 2 then
-      -- TODO - this scrolls too fast
-      buoy_editing_option_scroll_index = util.clamp(buoy_editing_option_scroll_index + d, 1, #buoy_options)
+      buoy_editing_option_scroll_index = util.clamp(buoy_editing_option_scroll_index + d, 1, #buoy_options())
     end
     
     if n == 3 then
-      option_config = buoy_options[buoy_editing_option_scroll_index]
+      option_config = buoy_options()[buoy_editing_option_scroll_index]
       
       old_value = buoy_editing_prototype.options[option_config.name]
       if option_config.option_range then
@@ -646,7 +683,7 @@ end
 
 function smoothly_make_tides()
   if run then
-    smoothing_counter = (smoothing_counter + 1) % SMOOTHING_FACTOR
+    smoothing_counter = (smoothing_counter + 1) % smoothing_factor
     if smoothing_counter == 0 then
       make_tides()
       update_buoy_depths()
@@ -672,14 +709,9 @@ function make_tides()
   old_grid_lighting = deep_copy(new_grid_lighting)
   disperse()
   roll_forward()
+  update_angle_gaps()
   
   tide_interval_counter = (tide_interval_counter % (tide_gap)) + 1
-
-  -- TODO - should we just recompute this every time
-  -- i.e. do we really need this check?
-  if tide_interval_counter == 1 then
-    current_angle_gaps = angle_gaps()
-  end
   
   new_tide(tide_interval_counter)
 
@@ -708,16 +740,14 @@ function new_tide(position)
   end
 end
 
-function angle_gaps()
+function update_angle_gaps()
   distance = math.tan(degrees_to_radians(params:get("angle")))
   offset = math.abs(math.min(0, util.round((g.rows - 1) * distance)))
   
-  result = {}
+  current_angle_gaps = {}
   for i = 0, g.rows - 1 do
-    table.insert(result, util.round(i * distance) + offset)
+    table.insert(current_angle_gaps, util.round(i * distance) + offset)
   end
-  
-  return result
 end
 
 function degrees_to_radians(degrees)
@@ -953,6 +983,8 @@ function redraw_screen()
     redraw_edit_buoy_screen()
   elseif displaying_tide_info_overlay() then
     redraw_tide_info_overlay()
+  elseif displaying_sample_rate_warning() then
+    redraw_sample_rate_warning()
   else
     redraw_regular_screen()
   end
@@ -973,6 +1005,24 @@ function redraw_meta_mode_screen()
   end
 end
 
+function redraw_sample_rate_warning()
+  screen.font_face(7)
+  screen.font_size(20)
+  
+  screen.move(64, 20)
+  screen.text_center("WARNING")
+  
+  screen.font_face(1)
+  screen.font_size(8)
+  
+  screen.move(64, 35)
+  screen.text_center("non-48k sound files loaded")
+  screen.move(64, 50)
+  screen.text_center("these sounds can be used")
+  screen.move(64, 60)
+  screen.text_center("but will sound affected")
+end
+
 function redraw_tide_info_overlay()
   screen.move(0, 30)
   screen.text("tide advance time")
@@ -988,7 +1038,7 @@ end
 function redraw_edit_buoy_screen()
   height = 40 - (buoy_editing_option_scroll_index * 10)
 
-  for option_index, option_config in pairs(buoy_options) do
+  for option_index, option_config in pairs(buoy_options()) do
     if option_index == buoy_editing_option_scroll_index then
       screen.level(15)
     else
@@ -1158,7 +1208,7 @@ function redraw_grid_lights_tide_shape_editor()
 end
 
 function redraw_grid_lights_main_view()
-  grid_lighting = grid_transition(smoothing_counter / SMOOTHING_FACTOR)
+  grid_lighting = grid_transition(smoothing_counter / smoothing_factor)
   
   for x = 1, g.cols do
     for y = 1, g.rows do
@@ -1232,7 +1282,7 @@ function Buoy:new(o)
   self.__index = self
   
   o.options = {}
-  for _, option_config in pairs(buoy_options) do
+  for _, option_config in pairs(all_buoy_options) do
     o.options[option_config.name] = option_config.default_value
   end
   
@@ -1260,8 +1310,6 @@ function Buoy:update_depth(new_depth)
   self.previous_depth = self.depth
   self.depth = new_depth
   
-  -- TODO - if you disable a buoy while it's still playing, it
-  -- just keeps playing, i.e. this doesn't take immediate effect
   if not self.active then
     return
   end
