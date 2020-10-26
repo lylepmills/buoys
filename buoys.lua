@@ -1,5 +1,5 @@
--- pilings_v15.lua
--- fix smoothing, fix pressing more buttons after already editing buoys
+-- pilings_v16.lua
+-- E2+E3 functionality (wave overlay)
 
 -- TODO LIST
 -- use local variables
@@ -16,15 +16,17 @@
 -- could dispersion look better if it were more concentric instead of UDLR?
 -- smoothing could/should be proportional to advance time
 -- midi CC outputs? midi sync?
+-- some kind of estimation to make it faster when there are a lot of particles?
+-- use E1 as a macro control?
 
--- encoder params
----- wave speed
----- wave gap
+-- NEXT UP
+---- tide gaps / tide angle stuff
 
 RUN = true
 
 DISPERSION_MULTIPLE = 0.001
 
+ADVANCE_TIME = 0.2
 TIDE_GAP = 25
 -- sinces waves move from left to right, they 
 -- will appear flipped vs these definitions
@@ -46,6 +48,7 @@ LONG_PRESS_TIME = 1.0
 BACKGROUND_METRO_TIME = 0.1
 POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
 SMOOTHING_FACTOR = 4
+MAX_TIDE_GAP = 100
 
 -- TODO - could these be tied to the rate at which waves are moving? ("auto" option)
 RATE_SLEW = 0.1
@@ -118,6 +121,8 @@ function init()
   -- tide_shape_index can be fractional, indicating interpolation between shapes
   tide_shape_index = 1
   tide_shapes = BASE_TIDE_SHAPES
+  tide_gap = TIDE_GAP
+  tide_advance_time = ADVANCE_TIME
 
   old_grid_lighting = fresh_grid(params:get("min_bright"))
   new_grid_lighting = fresh_grid(params:get("min_bright"))
@@ -125,6 +130,7 @@ function init()
   tide_interval_counter = 0
   smoothing_counter = 0
   held_grid_keys_counter = 0
+  tide_info_overlay_countdown = 0
   key_states = {0, 0, 0}
   was_editing_tides = false
   tide_height_multiplier = 1.0
@@ -136,7 +142,7 @@ function init()
   init_softcut()
   
   if RUN then
-    tide_maker = metro.init(smoothly_make_tides, params:get("advance_time") / SMOOTHING_FACTOR)
+    tide_maker = metro.init(smoothly_make_tides, tide_advance_time / SMOOTHING_FACTOR)
     tide_maker:start()
     background_metro = metro.init(background_metro_tasks, BACKGROUND_METRO_TIME)
     background_metro:start()
@@ -163,9 +169,6 @@ function init_params()
   params:add{ type = "option", id = "channel_style", name = "channel style", options = { "open", "flume" } }
   params:add_separator()
   params:add{ type = "number", id = "angle", name = "wave angle", min = -60, max = 60, default = 0, formatter = degree_formatter }
-  -- TODO = rename to wave speed
-  cs_advance_time = controlspec.new(0.1, 1.0, "lin", 0, 0.2, "seconds")
-  params:add{ type = "control", id = "advance_time", name = "advance time", controlspec = cs_advance_time, action = update_advance_time }
   params:add_separator()
   params:add{ type = "number", id = "dispersion", name = "dispersion", min = 0, max = 25, default = 10 }
   params:add_separator()
@@ -220,9 +223,16 @@ end
 function background_metro_tasks()
   update_held_grid_keys()
   update_dispersion_ui()
+  tide_info_overlay_expiring = tide_info_overlay_countdown == 1
+  tide_info_overlay_countdown = math.max(tide_info_overlay_countdown - 1, 0)
+  
+  if tide_info_overlay_expiring then
+    redraw_screen()
+  end
 end
 
 function mark_buoy_being_edited(x, y)
+  -- TODO - if creating a new one, and there is a prototype, copy its attributes
   buoys[y][x] = buoys[y][x] or Buoy:new()
   buoys[y][x].being_edited = true
   buoys[y][x].active = true
@@ -306,29 +316,45 @@ function grid_keys_held()
 end
 
 function update_advance_time()
-  tide_maker:start(params:get("advance_time") / SMOOTHING_FACTOR)
+  tide_maker:start(tide_advance_time / SMOOTHING_FACTOR)
 end
 
 function key(n, z)
   key_states[n] = z
   
-  if n == 3 and z == 0 and not was_editing_tides then
-    run = not run
+  if z == 0 and not was_editing_tides then
+    if n == 2 then
+      displaying_buoys = not displaying_buoys
+    elseif n == 3 then
+      run = not run
+    end
   end
   
   if key_states[2] == 0 and key_states[3] == 0 then
     was_editing_tides = false
   end
   
-  if n == 2 then
-    displaying_buoys = z == 1
-  end
-  
   redraw_lights()
 end
 
+function displaying_tide_info_overlay()
+  return tide_info_overlay_countdown > 0
+end
+
 function enc(n, d)
-  if editing_buoys() then
+  if not editing_buoys() then
+    if n == 2 then
+      tide_info_overlay_countdown = 10
+      tide_advance_time = util.clamp(tide_advance_time + d * 0.001, 0.1, 1.0)
+      update_advance_time()
+    end
+    -- TODO - make less sensitive?
+    if n == 3 then
+      tide_info_overlay_countdown = 10
+      -- TODO - do we really need a MAX_TIDE_GAP
+      tide_gap = util.clamp(tide_gap + d, 1, MAX_TIDE_GAP)
+    end
+  else
     if n == 2 then
       -- TODO - this scrolls too fast
       buoy_editing_option_scroll_index = util.clamp(buoy_editing_option_scroll_index + d, 1, #BUOY_OPTIONS)
@@ -392,8 +418,8 @@ function make_tides()
   disperse()
   roll_forward()
   
-  -- TODO - should this just use TIDE_GAP so you can set lower gaps than shape size?
-  tide_interval_counter = (tide_interval_counter % (TIDE_GAP + 8)) + 1
+  tide_interval_counter = (tide_interval_counter % (tide_gap)) + 1
+
   if tide_interval_counter == 1 then
     current_angle_gaps = angle_gaps()
   end
@@ -641,11 +667,25 @@ function redraw_screen()
   
   if editing_buoys() then
     redraw_edit_buoy_screen()
+  elseif displaying_tide_info_overlay() then
+    redraw_tide_info_overlay()
   else
     redraw_regular_screen()
   end
   
   screen.update()
+end
+
+function redraw_tide_info_overlay()
+  screen.move(0, 30)
+  screen.text("tide advance time")
+  screen.move(128, 30)
+  screen.text_right(tide_advance_time)
+  
+  screen.move(0, 40)
+  screen.text("tide gap")
+  screen.move(128, 40)
+  screen.text_right(tide_gap)
 end
 
 function redraw_edit_buoy_screen()
@@ -754,7 +794,8 @@ function redraw_arc_lights()
 end
 
 function edited_shape_index()
-  math.floor(tide_shape_index + 0.5)
+  result = math.floor(tide_shape_index + 0.5)
+  return result == 9 and 1 or result
 end
 
 function redraw_grid_lights_tide_shape_editor()
