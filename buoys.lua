@@ -1,5 +1,5 @@
--- pilings_v19.lua
--- supporting more buoy params
+-- pilings_v20.lua
+-- basic meta mode menus
 
 -- TODO LIST
 -- use local variables
@@ -58,6 +58,9 @@ LONG_PRESS_TIME = 1.0
 BACKGROUND_METRO_TIME = 0.1
 POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
 SMOOTHING_FACTOR = 4
+META_MODE_KEYS = { { x=1, y=1 }, { x=1, y=8 }, { x=16, y=1 }, { x=16, y=8 } }
+-- TODO - support all these options
+META_MODE_OPTIONS = { "load samples", "save state", "load state", "exit" }
 
 -- TODO - could these be tied to the rate at which waves are moving? ("auto" option)
 RATE_SLEW = 0.1
@@ -67,6 +70,7 @@ LEVEL_SLEW = 0.02
 AUDIO_FILE = _path.dust.."audio/tehn/mancini2.wav"
 -- AUDIO_FILE = _path.dust.."audio/tehn/drumlite.wav"
 -- AUDIO_FILE = _path.dust.."audio/hermit-leaves.wav"
+AUDIO_DIRECTORY = _path.dust.."audio/tehn"
 NUM_SOFTCUT_BUFFERS = 6
 
 function offset_formatter(value)
@@ -85,6 +89,58 @@ function zero_is_none_formatter(value)
   return tostring(value)
 end
 
+-- TODONOW - finish
+function load_samples(directory)
+  files = util.scandir(directory)
+end
+
+      -- Timber.FileSelect.enter(_path.audio, function(file)
+      --   file_select_active = false
+      --   screen_dirty = true
+      --   if file ~= "cancel" then
+      --     load_folder(file, add)
+      --   end
+      -- end)
+      
+-- local function load_folder(file, add)
+  
+--   local sample_id = 0
+--   if add then
+--     for i = NUM_SAMPLES - 1, 0, -1 do
+--       if Timber.samples_meta[i].num_frames > 0 then
+--         sample_id = i + 1
+--         break
+--       end
+--     end
+--   end
+  
+--   Timber.clear_samples(sample_id, NUM_SAMPLES - 1)
+  
+--   local split_at = string.match(file, "^.*()/")
+--   local folder = string.sub(file, 1, split_at)
+--   file = string.sub(file, split_at + 1)
+  
+--   local found = false
+--   for k, v in ipairs(Timber.FileSelect.list) do
+--     if v == file then found = true end
+--     if found then
+--       if sample_id > 255 then
+--         print("Max files loaded")
+--         break
+--       end
+--       -- Check file type
+--       local lower_v = v:lower()
+--       if string.find(lower_v, ".wav") or string.find(lower_v, ".aif") or string.find(lower_v, ".aiff") or string.find(lower_v, ".ogg") then
+--         Timber.load_sample(sample_id, folder .. v)
+--         sample_id = sample_id + 1
+--       else
+--         print("Skipped", v)
+--       end
+--     end
+--   end
+-- end
+
+
 BUOY_OPTIONS = {
   -- TODO
   -- attack/decay (auto vs controlled)
@@ -92,6 +148,8 @@ BUOY_OPTIONS = {
   -- sample
   -- depth envelope response
   ---- filter?
+  ---- min/max values
+  ---- volume
   ---- pan?
   ---- other options?
   {
@@ -179,6 +237,8 @@ function init()
   tide_info_overlay_countdown = 0
   key_states = {0, 0, 0}
   was_editing_tides = false
+  meta_mode = false
+  meta_mode_option_index = 1
   tide_height_multiplier = 1.0
   dispersion_ui_brightnesses = {}
   for i = 1, 64 do
@@ -276,6 +336,14 @@ function mark_buoy_being_edited(x, y)
 end
 
 function update_held_grid_keys()
+  -- special case for if the exact set of keys are held to enter meta mode
+  if meta_mode_keys_held() then
+    held_grid_keys = fresh_grid(0)
+    meta_mode = true
+    redraw()
+    return
+  end
+  
   keys_held = grid_keys_held()
   newly_editing_buoys = false
   clear_grid = false
@@ -313,6 +381,30 @@ function update_held_grid_keys()
 
     redraw_screen()
   end
+end
+
+function meta_mode_keys_held()
+  keys_held = grid_keys_held()
+  
+  if #keys_held ~= #META_MODE_KEYS then
+    return false
+  end
+  
+  for _, key_held in pairs(keys_held) do
+    x, y = key_held[1], key_held[2]
+    is_meta_mode_key = false
+    for _, meta_mode_key in pairs(META_MODE_KEYS) do
+      if x == meta_mode_key.x and y == meta_mode_key.y then
+        is_meta_mode_key = true
+      end
+    end
+    
+    if not is_meta_mode_key then
+      return false
+    end
+  end
+  
+  return true
 end
 
 function update_dispersion_ui()
@@ -360,20 +452,32 @@ end
 
 function key(n, z)
   key_states[n] = z
-  
-  if z == 0 and not was_editing_tides then
-    if n == 2 then
-      displaying_buoys = not displaying_buoys
-    elseif n == 3 then
-      run = not run
+  if meta_mode then
+    if z == 1 then
+      return
     end
+    
+    meta_mode_option = META_MODE_OPTIONS[meta_mode_option_index]
+    -- TODO - other options
+    if meta_mode_option == "exit" then
+      meta_mode = false
+      redraw()
+    end
+  else
+    if z == 0 and not was_editing_tides then
+      if n == 2 then
+        displaying_buoys = not displaying_buoys
+      elseif n == 3 then
+        run = not run
+      end
+    end
+    
+    if key_states[2] == 0 and key_states[3] == 0 then
+      was_editing_tides = false
+    end
+    
+    redraw_lights()
   end
-  
-  if key_states[2] == 0 and key_states[3] == 0 then
-    was_editing_tides = false
-  end
-  
-  redraw_lights()
 end
 
 function displaying_tide_info_overlay()
@@ -381,7 +485,9 @@ function displaying_tide_info_overlay()
 end
 
 function enc(n, d)
-  if not editing_buoys() then
+  if meta_mode then
+    meta_mode_option_index = util.clamp(meta_mode_option_index + d, 1, #META_MODE_OPTIONS)
+  elseif not editing_buoys() then
     if n == 2 then
       tide_info_overlay_countdown = 10
       tide_advance_time = util.clamp(tide_advance_time + d * 0.001, 0.1, 1.0)
@@ -728,7 +834,9 @@ function redraw_screen()
   screen.font_size(8)
   screen.level(15)
   
-  if editing_buoys() then
+  if meta_mode then
+    redraw_meta_mode_screen()
+  elseif editing_buoys() then
     redraw_edit_buoy_screen()
   elseif displaying_tide_info_overlay() then
     redraw_tide_info_overlay()
@@ -737,6 +845,21 @@ function redraw_screen()
   end
   
   screen.update()
+end
+
+-- TODO - maybe say K3 to enter somewhere?
+function redraw_meta_mode_screen()
+  -- META_MODE_OPTIONS = { "load samples", "save state", "load state", "exit" }
+  for option_index, option in pairs(META_MODE_OPTIONS) do
+    if option_index == meta_mode_option_index then
+      screen.level(15)
+    else
+      screen.level(5)
+    end
+    
+    screen.move(20, 10 + 10 * option_index)
+    screen.text(option)
+  end
 end
 
 function redraw_tide_info_overlay()
@@ -1133,6 +1256,10 @@ end
 -- grid
 
 g.key = function(x, y, z)
+  if meta_mode then
+    return
+  end
+  
   if editing_tide_shapes() then
     if z == 1 then
       if x == 1 then
