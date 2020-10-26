@@ -1,25 +1,20 @@
--- pilings_v32.lua
--- second crow input
--- negative dispersion
-
+-- pilings_v33.lua
+-- insanity mode easter egg
+-- other tweaks
 -- tidal influencer/activator/lightshow
 
 -- TODO LIST
 -- REMAINING FEATURES
--- check display logic for buoys in terms of both grid lights and norns display, seems to be some inconsistencies
--- make a util method for all the places where we use the % operator in a weird way to constrain to a [1, x] range
 -- more extended_only params
 ---- hysteresis for triggered thresholds
--- use local variables
 -- negative rates
 ---- have the sample start playing backward when the net velocity is backward (make this optional)
--- fix floating point display stuff
--- should pausing also pause the loops?
+-- pausing should pause playback (optionally)
 -- settable start/end points for samples?
--- make E1 control reverb send?
----- tab.print(params.params[12])
+-- vertical arc mode?
 
 -- LAST FEW THINGS
+-- use local variables
 -- test midi mapping
 -- tune defaults
 ---- especially collisions
@@ -28,6 +23,7 @@
 
 
 -- NOTES FOR RELEASE
+-- not a perfect physical simulation, not intended to be
 -- concept of safeguards - e.g. 
 ---- downshifting the clock multiplier if the external clock is too fast
 ---- clumping particles when there are a lot of them
@@ -348,7 +344,7 @@ ALL_BUOY_OPTIONS = {
   },
   {
     name = "reset threshold",
-    default_value = 1,
+    default_value = 0,
     option_range = {0, 14},
     option_step_value = 1,
     formatter = zero_is_none_formatter,
@@ -613,6 +609,7 @@ function init()
   meta_mode = false
   meta_mode_option_index = 1
   file_select_active = false
+  insanity_mode = false
   tide_height_multiplier = 1.0
   crow_known_to_be_connected = crow.connected()
   external_clock_multiplier = 1
@@ -621,6 +618,9 @@ function init()
   for i = 1, 64 do
     dispersion_ui_brightnesses[i] = 0
   end
+  -- respect initial reverb settings if already set
+  rev_cut_input = params:get("rev_cut_input")
+  rev_return_level = params:get("rev_return_level")
 
   init_softcut()
   init_crow()
@@ -641,13 +641,19 @@ function init()
   end
 end
 
+function modulo_base_one(num, modulus)
+  -- 8 is used a lot in this app, otherwise this is arbitrary
+  modulus = modulus or 8
+  return ((num - 1) % modulus) + 1
+end
+
 function tide_shape()
   result = {}
 
   for shape_index = 1, num_tide_shapes_in_sequence do
     first_shape_index, interpolation_fraction = math.modf(tide_shape_index + shape_index - 1)
-    first_shape_index = ((first_shape_index - 1) % 8) + 1
-    second_shape_index = (first_shape_index % 8) + 1
+    first_shape_index = modulo_base_one(first_shape_index)
+    second_shape_index = modulo_base_one(first_shape_index + 1)
     first_shape = tide_shapes[first_shape_index]
     second_shape = tide_shapes[second_shape_index]
     
@@ -727,8 +733,8 @@ function init_params()
   -- TODO - still would be nice to have options for midi mapping the other wave params
   params:add_separator()
   -- don't allow clocks on both inputs, that's just going to make things confusing and not work well
-  params:add{ type = "option", id = "crow_input_1", name = "crow input 1", options = { "clock", "run", "reset" }, default = 1 }
-  params:add{ type = "option", id = "crow_input_2", name = "crow input 2", options = { "run", "reset" }, default = 1 }
+  params:add{ type = "option", id = "crow_input_1", name = "crow input 1", options = { "clock", "run", "start/stop", "reset" }, default = 1 }
+  params:add{ type = "option", id = "crow_input_2", name = "crow input 2", options = { "run", "start/stop", "reset" }, default = 1 }
   params:add_separator()
   params:add{ type = "number", id = "min_bright", name = "background brightness", min = 1, max = 3, default = 1 }
   -- TODO - is max_depth respected at every point?
@@ -814,7 +820,10 @@ function process_crow_first_input(v)
   elseif params:get("crow_input_1") == 2 then  -- run
     run = v == 1
     recently_unpaused = run
-  elseif params:get("crow_input_1") == 3 and v == 1 then  -- reset
+  elseif params:get("crow_input_1") == 3 and v == 1 then  -- start/stop
+    run = not run
+    recently_unpaused = run
+  elseif params:get("crow_input_1") == 4 and v == 1 then  -- reset
     reset_tides()
   end
 end
@@ -823,7 +832,10 @@ function process_crow_second_input(v)
   if params:get("crow_input_2") == 1 then  -- run
     run = v == 1
     recently_unpaused = run
-  elseif params:get("crow_input_2") == 2 and v == 1 then  -- reset
+  elseif params:get("crow_input_2") == 2 and v == 1 then  -- start/stop
+    run = not run
+    recently_unpaused = run
+  elseif params:get("crow_input_2") == 3 and v == 1 then  -- reset
     reset_tides()
   end
 end
@@ -1015,7 +1027,9 @@ function mark_buoy_being_edited(x, y)
   end
 
   buoys[y][x].being_edited = true
-  buoys[y][x]:activate()
+  if not is_piling(x, y) then
+    buoys[y][x]:activate()
+  end
 end
 
 function update_held_grid_keys()
@@ -1230,10 +1244,47 @@ function displaying_external_clock_warning()
   return external_clock_warning_countdown > 0
 end
 
+function process_reverb_enc(d)
+  if d > 1 and rev_cut_input < 18 then
+    if rev_cut_input > -inf then
+      rev_cut_input = rev_cut_input + d * 0.1
+    else
+      rev_cut_input = -24
+      params:set("reverb", 2)
+    end
+    rev_return_level = rev_return_level - d * 0.05
+  elseif d < 1 and rev_cut_input > -inf then
+    rev_cut_input = rev_cut_input + d * 0.1
+    if rev_cut_input < -24 then
+      rev_cut_input = -inf
+      params:set("reverb", 1)
+    end
+    rev_return_level = rev_return_level - d * 0.05
+  end
+      
+  params:set("rev_cut_input", rev_cut_input)
+  params:set("rev_return_level", rev_return_level)
+end
+
 function enc(n, d)
+  if n == 1 then
+    process_reverb_enc(d)
+    return
+  end
+  
   if meta_mode then
-    meta_mode_option_index = util.clamp(meta_mode_option_index + d, 1, #META_MODE_OPTIONS)
-  elseif not editing_buoys() then
+    if n == 2 then
+      meta_mode_option_index = util.clamp(meta_mode_option_index + d, 1, #META_MODE_OPTIONS)
+    end
+  elseif editing_buoys() then
+    if n == 2 then
+      buoy_editing_option_scroll_index = util.clamp(buoy_editing_option_scroll_index + d, 1, #buoy_options())
+    end
+    
+    if n == 3 then
+      edit_buoys(d)
+    end
+  else
     if n == 2 then
       tide_info_overlay_countdown = 10
       
@@ -1250,14 +1301,6 @@ function enc(n, d)
     if n == 3 then
       tide_info_overlay_countdown = 10
       tide_gap = math.max(tide_gap + d, 1)
-    end
-  else
-    if n == 2 then
-      buoy_editing_option_scroll_index = util.clamp(buoy_editing_option_scroll_index + d, 1, #buoy_options())
-    end
-    
-    if n == 3 then
-      edit_buoys(d)
     end
   end
   
@@ -1322,6 +1365,8 @@ function smoothly_make_tides()
       redraw_lights()
     end
   end
+  
+  redraw()
 end
 
 function reset_tides()
@@ -1383,8 +1428,12 @@ function new_tide(position)
   clumping_factor = choose_clumping_factor()
   
   for y = 1, g.rows do
-    tide_index = ((position - current_angle_gaps[y] - 1) % tide_gap) + 1
-    num_new_particles = tide_shape()[tide_index] or 0
+    tide_index = modulo_base_one(position - current_angle_gaps[y], tide_gap)
+    if insanity_mode then
+      num_new_particles = tide_shapes[y][tide_index] or 0
+    else
+      num_new_particles = tide_shape()[tide_index] or 0
+    end
     num_new_particles = util.round(num_new_particles * tide_height_multiplier)
     
     while num_new_particles > 0 do
@@ -1744,6 +1793,11 @@ function redraw_edit_buoy_screen()
       
       buoy_value = buoy_editing_prototype.options[option_config.name]
       screen.move(128, height)
+      
+      -- attempt to avoid floating point display issues
+      if type(buoy_value) == "number" and (buoy_value % 1 ~= 0) then
+        buoy_value = util.round(buoy_value, 0.001)
+      end
   
       if option_config.formatter then
         option_value_text = option_config.formatter(buoy_value)
@@ -1769,11 +1823,17 @@ function redraw_regular_screen()
         screen.circle(x * 8 - 4, y * 8 - 4, 3.4)
         screen.fill()
       elseif buoys[y][x] and buoys[y][x].active then
-        screen.circle(x * 8 - 4, y * 8 - 4, 3.4)
+        screen.rect(x * 8 - 7.1, y * 8 - 7.1, 6.4, 6.4)
         screen.fill()
         screen.level(0)
-        screen.circle(x * 8 - 4, y * 8 - 4, 2.7)
+        screen.rect(x * 8 - 5.9, y * 8 - 5.9, 4.0, 4.0)
         screen.fill()
+
+        level = buoys[y][x]:currently_playing() and 15 or 5
+        screen.level(level)
+        screen.rect(x * 8 - 4.9, y * 8 - 4.9, 2.0, 2.0)
+        screen.fill()
+        
         screen.level(15)
       end
     end
@@ -1870,7 +1930,13 @@ function redraw_grid_lights_tide_shape_editor()
   current_index = edited_shape_index()
   current_shape = tide_shapes[current_index]
 
-  if num_tide_shapes_in_sequence == 1 then
+  if insanity_mode then
+    reference_time = util.time() % 2
+    brightness = util.round(math.abs(1 - reference_time) * 15)
+    for y = 1, g.rows do
+      g:led(1, y, brightness)
+    end
+  elseif num_tide_shapes_in_sequence == 1 then
     for y = 1, g.rows do
       brightness = y == current_index and 15 or 0
       g:led(1, y, brightness)
@@ -1878,7 +1944,7 @@ function redraw_grid_lights_tide_shape_editor()
     end
   else
     first_in_sequence = util.round(tide_shape_index)
-    last_in_sequence = ((first_in_sequence + num_tide_shapes_in_sequence - 2) % 8) + 1
+    last_in_sequence = modulo_base_one(first_in_sequence + num_tide_shapes_in_sequence - 1)
     reference_time = util.time() % 2
     
     for y = 1, g.rows do
@@ -2045,6 +2111,10 @@ end
 
 function Buoy:start_playing()
   if self:has_softcut_buffer() then
+    if self:finished_playing() then
+      self:reset_playhead()
+    end
+    
     return 
   end
   
@@ -2078,6 +2148,10 @@ function Buoy:grab_softcut_buffer()
     return
   end
   
+  if not self:sound_details() then
+    return
+  end
+  
   self.softcut_buffer = next_softcut_buffer()
   if not self:has_softcut_buffer() then
     return
@@ -2101,12 +2175,12 @@ function Buoy:newly_exceeds_reset_threshold()
 end
 
 function Buoy:newly_exceeds_play_threshold()
-  reset_threshold = self.options["play threshold"]
-  if reset_threshold < 1 then
+  play_threshold = self.options["play threshold"]
+  if play_threshold < 1 then
     return false
   end
   
-  return (self.previous_depth < reset_threshold) and (self.depth >= reset_threshold)
+  return (self.previous_depth < play_threshold) and (self.depth >= play_threshold)
 end
 
 -- oldest voices are stolen first unless marked uninterruptible, in which case
@@ -2132,6 +2206,10 @@ function next_softcut_buffer()
   end
   
   return best_candidate
+end
+
+function Buoy:currently_playing()
+  return self.active_start_time > 0 and not self:finished_playing()
 end
 
 function Buoy:finished_playing()
@@ -2474,15 +2552,23 @@ g.key = function(x, y, z)
     if z == 1 then
       if x == 1 then
         new_wave_sequence = false
+        toggling_insanity_mode = true
         for y_held = 1, g.rows do
+          if held_grid_keys[y_held][1] ~= 1 then
+            toggling_insanity_mode = false
+          end
+          
           if y ~= y_held then
             if held_grid_keys[y_held][1] == 1 then
               new_wave_sequence = true
               tide_shape_index = y_held
               num_tide_shapes_in_sequence = ((y - y_held) % 8) + 1
-              break
             end
           end
+        end
+        
+        if toggling_insanity_mode then
+          insanity_mode = not insanity_mode
         end
 
         if not new_wave_sequence then
@@ -2520,8 +2606,6 @@ g.key = function(x, y, z)
         end
       end
     end
-    
-    -- held_grid_keys[y][x] = z
   end
   
   redraw_lights()
