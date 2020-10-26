@@ -1,19 +1,15 @@
--- pilings_v36.lua
--- fixed logic for determining when sample is finished playing
+-- pilings_v37.lua
+-- simpler reverb macro
+-- make tide_shape_index a param
 -- tidal influencer/activator/lightshow
 
 -- TODO LIST
 -- REMAINING FEATURES
--- negative rates
----- have the sample start playing backward when the net velocity is backward (make this optional)
--- settable start/end points for samples
 -- autosave periodically?
 
 -- LAST FEW THINGS
 -- use local variables
 -- test midi mapping
--- tune defaults
----- especially collisions
 -- organize into libs?
 
 
@@ -29,20 +25,24 @@
 
 
 -- IDEAS FOR LATER VERSIONS
--- 1. live input processing
--- 2. stereo samples
--- 3. better alternate sample rate support
+-- 1. negative rates
+-- 2. buffer position modulation
+-- 3. live input processing
+-- 4. stereo samples
+-- 5. better alternate sample rate support
 --    (https://llllllll.co/t/norns-2-0-softcut/20550/176)
--- 4. expanded midi support (note on triggers, velocity, poly aftertouch?)
--- 5. find a good way to support loading samples from multiple folders
--- 6. filter slew options (when possible in softcut)
--- 7. MYSTERY E1 FEATURE???
--- 8. more realistic behavior when tides exceed max tide depth, e.g.
+-- 6. expanded midi support (note on triggers, velocity, poly aftertouch?)
+-- 7. find a good way to support loading samples from multiple folders
+-- 8. filter slew options (when possible in softcut)
+-- 9. use loop-point-crossing callback in softcut when possible
+-- 10. MYSTERY E1 FEATURE???
+-- 11. more realistic behavior when tides exceed max tide depth, e.g.
 --    when a bunch of them get stuck up against a wall
 
 -- ACKNOWLEDGEMENTS
 -- Thanks to John Sloan for feedback on the concept and the interface
 -- at several points along the way.
+-- Thanks to @zebra for building softcut and answering my softcut questions.
 -- I borrowed some file/folder loading logic from Timber Player, and 
 -- some midi stuff from Changes, thanks @markeats.
 
@@ -156,9 +156,6 @@ function negative_is_auto_formatter(value)
 end
 
 ALL_BUOY_OPTIONS = {
-  -- TODO
-  -- depth envelope response
-  ---- position
   {
     name = "sound",
     default_value = 0,
@@ -166,6 +163,20 @@ ALL_BUOY_OPTIONS = {
     option_step_value = 1,
     formatter = sound_option_formatter,
   }, 
+  {
+    name = "sound start point %",
+    default_value = 0.0,
+    option_range = {0.0, "sound end point %"},
+    option_step_value = 0.04,
+    extended_only = true,
+  },
+  {
+    name = "sound end point %",
+    default_value = 100.0,
+    option_range = {"sound start point %", 100.0},
+    option_step_value = 0.04,
+    extended_only = true,
+  },
   {
     name = "looping",
     default_value = 1,
@@ -360,7 +371,6 @@ ALL_BUOY_OPTIONS = {
     extended_only = true,
   },
   { name = "OPTION_SPACER", extended_only = true },
-  -- TODO - handle negative rates?
   {
     name = "zenith rate",
     default_value = 1.0,
@@ -632,8 +642,6 @@ function init()
   displaying_buoys = false
   advance_time_dirty = false
   buoy_editing_option_scroll_index = 1
-  -- tide_shape_index can be fractional, indicating interpolation between shapes
-  tide_shape_index = 1.0
   num_tide_shapes_in_sequence = 1
   tide_shapes = BASE_TIDE_SHAPES
   tide_gap = TIDE_GAP
@@ -675,7 +683,7 @@ function init()
   init_midi_in()
   
   if RUN_SIMPLE then
-    tide_shape_index = 6.0
+    params:set("tide_shape_index", 6.0)
     params:set("dispersion", 0)
     params:set("smoothing", 1)
     tide_gap = 16
@@ -699,7 +707,7 @@ function tide_shape()
   result = {}
 
   for shape_index = 1, num_tide_shapes_in_sequence do
-    first_shape_index, interpolation_fraction = math.modf(tide_shape_index + shape_index - 1)
+    first_shape_index, interpolation_fraction = math.modf(params:get("tide_shape_index") + shape_index - 1)
     first_shape_index = modulo_base_one(first_shape_index)
     second_shape_index = modulo_base_one(first_shape_index + 1)
     first_shape = tide_shapes[first_shape_index]
@@ -776,7 +784,7 @@ function max_depth_updated_action(max_depth)
 end
 
 function init_params()
-  params:add_group("PILINGS", 16)
+  params:add_group("PILINGS", 17)
   
   params:add{ type = "option", id = "channel_style", name = "channel style", options = { "open", "flume" } }
   params:add{ type = "option", id = "extended_buoy_params", name = "extended buoy params", options = { "off", "on" } }
@@ -785,6 +793,7 @@ function init_params()
   params:add{ type = "option", id = "unpausing", name = "tides unpaused", options = { "resume", "reset buoys" } }
   params:add_separator()
   params:add_control("tide_height_multiplier", "tide height multiplier", controlspec.new(0.0, 1.0, "lin", 0.01, 1.0, nil))
+  params:add_control("tide_shape_index", "tide shape index", controlspec.new(1.0, 8.99, "lin", 0.01, 1.0, nil))
   params:add{ type = "number", id = "angle", name = "wave angle", min = -60, max = 60, default = 0, formatter = degree_formatter }
   params:add{ type = "number", id = "dispersion", name = "dispersion", min = -25, max = 25, default = 10, action = dispersion_updated_action }
   params:add_separator()
@@ -1376,26 +1385,12 @@ function displaying_external_clock_warning()
 end
 
 function process_reverb_enc(d)
-  if d > 1 and rev_cut_input < 18 then
-    if rev_cut_input > -inf then
-      rev_cut_input = rev_cut_input + d * 0.1
-    else
-      rev_cut_input = -24
-      params:set("reverb", 2)
-    end
-    rev_return_level = rev_return_level - d * 0.05
-  elseif d < 1 and rev_cut_input > -inf then
-    rev_cut_input = rev_cut_input + d * 0.1
-    if rev_cut_input < -24 then
-      rev_cut_input = -inf
-      params:set("reverb", 1)
-    end
-    rev_return_level = rev_return_level - d * 0.05
+  if (params:get("rev_cut_input") == -9.0) and d < 0 then
+    params:set("reverb", 1)
+  else
+    params:set("reverb", 2)
+    params:set("rev_cut_input", util.clamp(params:get("rev_cut_input"), -9.0, 3.0) + d * 0.1)
   end
-      
-  -- TODO - is this silly? should we just increase the cut input up to a reasonable point?
-  params:set("rev_cut_input", rev_cut_input)
-  params:set("rev_return_level", rev_return_level)
 end
 
 function enc(n, d)
@@ -1449,14 +1444,15 @@ function edit_buoys(d)
   if option_config.option_range then
     range_min = option_config.option_range[1]
     range_max = option_config.option_range[2]
+    step_value = option_config.option_step_value or 1
     
     -- ranges can be defined in terms of other option values, this is useful
-    -- for setting zenith/nadir points
+    -- for setting zenith/nadir points and other applications
     if type(range_min) == "string" then
-      range_min = buoy_editing_prototype.options[range_min] + 1
+      range_min = buoy_editing_prototype.options[range_min] + step_value
     end
     if type(range_max) == "string" then
-      range_max = buoy_editing_prototype.options[range_max] - 1
+      range_max = buoy_editing_prototype.options[range_max] - step_value
     end
     
     new_value = util.clamp(old_value + (d * option_config.option_step_value), range_min, range_max)
@@ -2045,7 +2041,7 @@ function redraw_arc_lights()
 end
 
 function edited_shape_index()
-  result = util.round(tide_shape_index)
+  result = util.round(params:get("tide_shape_index"))
   return result == 9 and 1 or result
 end
 
@@ -2084,7 +2080,7 @@ function redraw_grid_lights_tide_shape_editor()
       g:led(16, y, 0)
     end
   else
-    first_in_sequence = util.round(tide_shape_index)
+    first_in_sequence = util.round(params:get("tide_shape_index"))
     last_in_sequence = modulo_base_one(first_in_sequence + num_tide_shapes_in_sequence - 1)
     reference_time = util.time() % 2
     
@@ -2184,6 +2180,8 @@ Buoy = {
   active_start_time = -1,
   play_triggerable = true,
   reset_triggerable = true,
+  sample_start_time = -1,
+  sample_end_time = -1,
   loop_start_time = -1,
   loop_end_time = -1,
 }
@@ -2413,6 +2411,10 @@ function Buoy:update_option(name, value)
   
   if name == "sound" then
     self:update_sound()
+  elseif name == "sound start point %" then
+    self:update_sound_loop_points()
+  elseif name == "sound end point %" then
+    self:update_sound_loop_points()
   elseif name == "octave offset" then
     self:update_rate_immediately()
   elseif name == "semitone offset" then
@@ -2528,12 +2530,22 @@ function Buoy:update_sound()
 
   start_loc = details["start_location"]
   end_loc = start_loc + details["duration"]
-  self.loop_start_time = start_loc
-  self.loop_end_time = end_loc
-  start_pos = self:effective_rate() >= 0 and start_loc or end_loc
-  softcut.loop_start(self.softcut_buffer, start_loc)
-  softcut.loop_end(self.softcut_buffer, end_loc)
+  self.sample_start_time = start_loc
+  self.sample_end_time = end_loc
+  self:update_sound_loop_points()
+  start_pos = self:effective_rate() >= 0 and self.loop_start_time or self.loop_end_time
+  softcut.loop_start(self.softcut_buffer, self.loop_start_time)
+  softcut.loop_end(self.softcut_buffer, self.loop_end_time)
   softcut.position(self.softcut_buffer, start_pos)
+end
+
+function Buoy:update_sound_loop_points()
+  sample_length = self.sample_end_time - self.sample_start_time
+  self.loop_start_time = self.sample_start_time + sample_length * (self.options["sound start point %"] / 100)
+  self.loop_end_time = self.sample_start_time + sample_length * (self.options["sound end point %"] / 100)
+  softcut.loop_start(self.softcut_buffer, self.loop_start_time)
+  softcut.loop_end(self.softcut_buffer, self.loop_end_time)
+  softcut.position(self.softcut_buffer, self.loop_start_time)
 end
 
 function Buoy:sound_details()
@@ -2805,7 +2817,7 @@ g.key = function(x, y, z)
           if y ~= y_held then
             if held_grid_keys[y_held][1] == 1 then
               new_wave_sequence = true
-              tide_shape_index = y_held
+              params:set("tide_shape_index", y_held)
               num_tide_shapes_in_sequence = ((y - y_held) % 8) + 1
             end
           end
@@ -2816,7 +2828,7 @@ g.key = function(x, y, z)
         end
 
         if not new_wave_sequence then
-          tide_shape_index = y
+          params:set("tide_shape_index", y)
           num_tide_shapes_in_sequence = 1
         end
       else
@@ -2862,12 +2874,16 @@ function a.delta(n, d)
   if n == 1 then
     params:delta("tide_height_multiplier", d * 0.1)
   elseif n == 2 then
-    tide_shape_index = tide_shape_index + (d * 0.01)
+    print("delta d: "..d)
+    -- we circumvent the simpler params:delta approach in order to support
+    -- circular transitions between the 8 tide shapes (8->1 and 1->8)
+    tide_shape_index = params:get("tide_shape_index") + (d * 0.01)
     if tide_shape_index >= 9 then
-      tide_shape_index = tide_shape_index - 8
-    end
-    if tide_shape_index < 1 then
-      tide_shape_index = tide_shape_index + 8
+      params:set("tide_shape_index", tide_shape_index - 8)
+    elseif tide_shape_index < 1 then
+      params:set("tide_shape_index", tide_shape_index + 8)
+    else
+      params:set("tide_shape_index", tide_shape_index)
     end
   elseif n == 3 then
     params:delta("angle", d * 0.1)
