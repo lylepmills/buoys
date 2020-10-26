@@ -1,5 +1,29 @@
--- pilings_v10.lua
--- buoy parameter editing
+-- pilings_v11.lua
+-- rate options work
+
+-- TODO LIST
+-- more tide shapes
+-- use local variables
+-- tune defaults
+---- especially collisions
+-- sound
+-- arc control? (common params, configurable?)
+---- wave speed, wave height, wave interval, filter cutoff?
+-- randomize waves somewhat?
+-- waveshapes with initial Y differences?
+---- more wave shaping control, attack/decay type thing?
+-- threshold option for sounding on last row (must be > min)?
+-- allow diagonal movement (option)?
+---- POTENTIAL_DISPERSION_DIRECTIONS?
+---- also roll_forward()?
+-- do something about disappearing density when you hit a wall?
+-- excessive density could lead to faster speeds, much like IRL
+---- optional overflow mode?
+-- could dispersion look better if it were more concentric instead of UDLR?
+-- wave designer page?
+---- hold both buttons to enter?
+-- smoothing could/should be proportional to advance time
+-- midi CC outputs? midi sync?
 
 RUN = true
 SHOW_GRID = true
@@ -89,9 +113,8 @@ function init()
   current_angle_gaps = angle_gaps()
   tide_interval_counter = 0
   smoothing_counter = 0
-  -- TODO - make this a method so it accounts for some taking longer than others
-  next_softcut_buffer = 1
-  
+  held_grid_keys_counter = 0
+
   init_softcut()
   
   if RUN then
@@ -164,6 +187,7 @@ function init_softcut()
 end
 
 function update_held_grid_keys()
+  held_grid_keys_counter = held_grid_keys_counter + 1
   keys_held = grid_keys_held()
   newly_editing_buoys = false
   
@@ -188,8 +212,7 @@ function update_held_grid_keys()
     end
     
     buoy_editing_prototype = buoys[longest_held_key[2]][longest_held_key[1]]
-    print("buoy_editing_prototype: "..longest_held_key[2].." "..longest_held_key[1])
-    
+
     redraw_screen()
   end
 end
@@ -255,8 +278,7 @@ function enc(n, d)
       for x = 1, g.cols do
         for y = 1, g.rows do
           if buoys[y][x] and buoys[y][x].being_edited then
-            print("buoy being edited "..x.." "..y)
-            buoys[y][x].options[option_config.name] = new_value
+            buoys[y][x]:update_option(option_config.name, new_value)
           end
         end
       end
@@ -289,8 +311,7 @@ function update_buoy_depths()
     for y = 1, g.rows do
       if buoys[y][x] then
         depth = new_grid_lighting[y][x] - params:get("min_bright")
-        Buoy.update_depth(buoys[y][x], depth)
-        -- buoys[y][x].update_depth(depth)
+        buoys[y][x]:update_depth(depth)
       end
     end
   end
@@ -691,6 +712,7 @@ Buoy = {
   previous_depth = 0,
   depth = 0,
   softcut_buffer = -1,
+  active_start_counter = -1,  -- held_grid_keys_counter
 }
 
 function Buoy:new(o)
@@ -707,9 +729,6 @@ function Buoy:new(o)
 end
 
 -- TODO - work on parameterization like multiple samples, etc
--- TODO - should have a map from buffer indexes to buoys so we
-----  can stop having the old one play if it gets replaced
-----  by the round robin
 function Buoy:update_depth(new_depth)
   self.previous_depth = self.depth
   self.depth = new_depth
@@ -724,24 +743,71 @@ function Buoy:update_depth(new_depth)
   end
   
   if self.previous_depth == 0 then
-    self.softcut_buffer = next_softcut_buffer
-    -- voice stealing by round robin
+    self.softcut_buffer = next_softcut_buffer()
+    self.active_start_counter = held_grid_keys_counter
     old_buffer_buoy = buffer_buoy_map[self.softcut_buffer]
-    -- TODO - should round robin ejection be the only option, or
-    -- should there be other modes like no voice stealing?
     if old_buffer_buoy then
       old_buffer_buoy.softcut_buffer = -1
     end
     buffer_buoy_map[self.softcut_buffer] = self
-    next_softcut_buffer = ((next_softcut_buffer + 1) % NUM_SOFTCUT_BUFFERS) + 1
+    
     softcut.level(self.softcut_buffer, 1.0 * self.depth / max_depth())
     softcut.position(self.softcut_buffer, 1)
+    self:update_rate()
     softcut.play(self.softcut_buffer, 1)
   elseif self.depth == 0 then
     softcut.play(self.softcut_buffer, 0)
     buffer_buoy_map[self.softcut_buffer] = nil
     self.softcut_buffer = -1
   end
+end
+
+-- voice stealing by round robin
+-- TODO - should round robin ejection be the only option, or
+-- should there be other modes like no voice stealing?
+function next_softcut_buffer()
+  oldest_active_start_counter = math.huge
+  best_candidate = 1
+  
+  for i = 1, NUM_SOFTCUT_BUFFERS do
+    buoy = buffer_buoy_map[i]
+    if not buoy then
+      return i
+    end
+    
+    if buoy.active_start_counter < oldest_active_start_counter then
+      best_candidate = i
+      oldest_active_start_counter = buoy.active_start_counter
+    end
+  end
+  
+  return best_candidate
+end
+
+function Buoy:update_option(name, value)
+  self.options[name] = value
+  
+  -- TODO - update with more option types
+  if name == "octave offset" then
+    self:update_rate()
+  elseif name == "semitone offset" then
+    self:update_rate()
+  elseif name == "cent offset" then
+    self:update_rate()
+  end
+end
+
+function Buoy:update_rate()
+  if self.softcut_buffer < 1 then
+    return
+  end
+  
+  octave_offset = self.options["octave offset"]
+  semitone_offset = self.options["semitone offset"]
+  cent_offset = self.options["cent offset"]
+  
+  rate = 2.0 ^ (octave_offset + (semitone_offset / 12) + (cent_offset / 1200))
+  softcut.rate(self.softcut_buffer, rate)
 end
 
 -- grid
