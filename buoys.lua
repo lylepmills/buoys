@@ -1,8 +1,7 @@
--- pilings_v26.lua
--- various TODOS
+-- pilings_v27.lua
+-- extended buoy params for zenith/nadir points
 
 -- TODO LIST
--- use local variables
 -- tune defaults
 ---- especially collisions
 -- allow diagonal movement (option)?
@@ -20,6 +19,7 @@
 -- have the sample start playing backward when the net velocity is backward (make this optional)
 -- figure out how we're going to do slews - will they sound right for things like filtering?
 -- midi CC outputs, midi sync. midi note outputs - how would that work with velocity and such?
+---- https://github.com/markwheeler/changes/blob/main/changes.lua
 -- crow support
 ---- 4 cv outs (could also have triggers for crossing thresholds)
 ---- 1 clock in, 1 assignable CV param?
@@ -28,15 +28,21 @@
 -- check display logic for buoys in terms of both grid lights and norns display, seems to be some inconsistencies
 -- make a util method for all the places where we use the % operator in a weird way to constrain to a [1, x] range
 -- extended_only params
----- specifiable zenith/nadir points for each sound param
 ---- hysteresis for triggered thresholds?
 -- test midi mapping
+-- use local variables
+-- clocks?
+---- https://vimeo.com/416730766
+-- negative rates
+
 
 -- IDEAS FOR LATER VERSIONS
 -- 1. live input processing
--- 2. support stereo samples
--- 3. transparently support alternate sample rates
+-- 2. stereo samples
+-- 3. better alternate sample rate support
 --    (https://llllllll.co/t/norns-2-0-softcut/20550/176)
+-- 4. zenith/nadir rate multipliers?
+--    (would require new approach to determining when sound is finished)
 
 -- ACKNOWLEDGEMENTS
 -- I borrowed some file/folder loading logic from Timber Player, thanks @markeats.
@@ -74,16 +80,6 @@ POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, {
 META_MODE_KEYS = { { x=1, y=1 }, { x=1, y=8 }, { x=16, y=1 }, { x=16, y=8 } }
 META_MODE_OPTIONS = { "choose sample folder", "clear inactive buoys", "save state", "load state", "exit" }
 
--- TODO - could these be tied to the rate at which waves are moving? ("auto" option)
-RATE_SLEW = 0.1
--- LEVEL_SLEW = 0.2
-LEVEL_SLEW = 0.02
--- AUDIO_FILE = _path.dust.."audio/tehn/mancini1.wav"
-AUDIO_FILE = _path.dust.."audio/tehn/mancini2.wav"
--- AUDIO_FILE = _path.dust.."audio/tehn/drumlite.wav"
--- AUDIO_FILE = _path.dust.."audio/hermit-leaves.wav"
-AUDIO_DIRECTORY = _path.dust.."audio/tehn"
-
 function sound_option_formatter(value)
   if value == 0 then
     return "none"
@@ -95,6 +91,14 @@ function sound_option_formatter(value)
   
   cleaned_name, _ = split_file_extension(sample_details[value].name)
   return cleaned_name
+end
+
+function frequency_exp_convert(value)
+  return util.linexp(0, 100, 20, 20000, value)
+end
+
+function frequency_formatter(value)
+  return util.round(frequency_exp_convert(value)).."hz"
 end
 
 function panning_formatter(value)
@@ -118,6 +122,14 @@ end
 function zero_is_none_formatter(value)
   if value == 0 then
     return "none"
+  end
+  
+  return tostring(value)
+end
+
+function negative_is_auto_formatter(value)
+  if value < 0 then
+    return "auto"
   end
   
   return tostring(value)
@@ -194,9 +206,8 @@ end
 
 all_buoy_options = {
   -- TODO
-  -- attack/decay (auto vs controlled)
+  -- slews for things that don't have softcut builtins (auto vs controlled)
   -- depth envelope response
-  ---- filter
   ---- position?
   -- spaces between categories?
   {
@@ -250,6 +261,28 @@ all_buoy_options = {
     option_step_value = 0.01,
   },
   {
+    name = "volume slew",
+    default_value = -0.01,
+    option_range = {-0.01, 5.0},
+    option_step_value = 0.01,
+    formatter = negative_is_auto_formatter,
+    extended_only = true,
+  },
+  {
+    name = "volume zenith point",
+    default_value = 14,
+    option_range = {"volume nadir point", 14},
+    option_step_value = 1,
+    extended_only = true,
+  },
+  {
+    name = "volume nadir point",
+    default_value = 0,
+    option_range = {0, "volume zenith point"},
+    option_step_value = 1,
+    extended_only = true,
+  },
+  {
     name = "zenith pan",
     default_value = 0.0,
     option_range = {-1.0, 1.0},
@@ -263,7 +296,71 @@ all_buoy_options = {
     option_step_value = 0.01,
     formatter = panning_formatter,
   },
-  -- TODO - separate play/reset thresholds for looping stuff
+  {
+    name = "pan slew",
+    default_value = -0.01,
+    option_range = {-0.01, 5.0},
+    option_step_value = 0.01,
+    formatter = negative_is_auto_formatter,
+    extended_only = true,
+  },
+  {
+    name = "pan zenith point",
+    default_value = 14,
+    option_range = {"pan nadir point", 14},
+    option_step_value = 1,
+    extended_only = true,
+  },
+  {
+    name = "pan nadir point",
+    default_value = 0,
+    option_range = {0, "pan zenith point"},
+    option_step_value = 1,
+    extended_only = true,
+  },
+  -- TODO - resonance/Q controls?
+  {
+    name = "filter type",
+    default_value = 1,
+    options = {"low pass", "high pass", "band pass", "band reject"},
+  },
+  {
+    name = "zenith filter cutoff",
+    default_value = 100,
+    option_range = {0, 100},
+    option_step_value = 0.05,
+    formatter = frequency_formatter,
+  },
+  {
+    name = "nadir filter cutoff",
+    default_value = 100,
+    option_range = {0, 100},
+    option_step_value = 0.05,
+    formatter = frequency_formatter,
+  },
+  {
+    name = "cutoff zenith point",
+    default_value = 14,
+    option_range = {"cutoff nadir point", 14},
+    option_step_value = 1,
+    extended_only = true,
+  },
+  {
+    name = "cutoff nadir point",
+    default_value = 0,
+    option_range = {0, "cutoff zenith point"},
+    option_step_value = 1,
+    extended_only = true,
+  },
+  -- TODO - figure out how to handle threshold of none, 
+  -- currently it always resets too
+  {
+    name = "play threshold",
+    default_value = 1,
+    option_range = {0, 15},
+    option_step_value = 1,
+    formatter = zero_is_none_formatter,
+  },
   {
     name = "reset threshold",
     default_value = 1,
@@ -370,6 +467,29 @@ end
 function max_depth_updated_action(max_depth)
   -- as a side effect of recomputing depths, particles_to_tide_depths will clear excess particles
   particles_to_tide_depths()
+  
+  for i = 1, #all_buoy_options do
+    buoy_option = all_buoy_options[i]
+    if string.find(buoy_option.name, "zenith point") then
+      buoy_option.option_range[2] = max_depth
+    end
+  end
+  
+  for x = 1, g.cols do
+    for y = 1, g.rows do
+      if buoys[y][x] then
+        for option_name, option_value in pairs(buoys[y][x].options) do
+          if string.find(option_name, "zenith point") then
+            new_zenith_point = math.min(option_value, max_depth)
+            buoys[y][x]:update_option(option_name, new_zenith_point)
+          elseif string.find(option_name, "nadir point") then
+            new_nadir_point = math.min(option_value, max_depth - 1)
+            buoys[y][x]:update_option(option_name, new_nadir_point)
+          end
+        end
+      end
+    end
+  end
 end
 
 function init_params()
@@ -390,8 +510,6 @@ end
 
 function init_softcut()
   softcut.buffer_clear()
-  softcut.buffer_read_mono(AUDIO_FILE, 0, 1, -1, 1, 1)
-  
   buffer_buoy_map = {}
 
   for i = 1, softcut.VOICE_COUNT do
@@ -399,14 +517,15 @@ function init_softcut()
     softcut.buffer(i, 1)
     softcut.level(i, 1.0)
     softcut.loop(i, 0)
-    softcut.loop_start(i, 1.0)
-    softcut.loop_end(i, 6.0)
-    softcut.position(i, 1.0)
     softcut.rate(i, 1.0)
+    softcut.post_filter_dry(i, 0.0)
+    softcut.post_filter_lp(i, 1.0)
+    softcut.post_filter_fc(i, 20000.0)
     buffer_buoy_map[i] = nil
 
-    softcut.rate_slew_time(i, RATE_SLEW)
-    softcut.level_slew_time(i, LEVEL_SLEW)
+    softcut.rate_slew_time(i, 0.0)
+    softcut.level_slew_time(i, ADVANCE_TIME)
+    softcut.pan_slew_time(i, ADVANCE_TIME)
   end
 end
 
@@ -566,7 +685,16 @@ function grid_keys_held()
 end
 
 function update_advance_time()
-  smoothing_factor = util.clamp(util.round(tide_advance_time * 20), 2, 15)
+  for x = 1, g.cols do
+    for y = 1, g.rows do
+      if buoys[y][x] then
+        buoys[y][x]:update_level_slew()
+        buoys[y][x]:update_pan_slew()
+      end
+    end
+  end
+  
+  smoothing_factor = util.clamp(util.round(tide_advance_time * 20), 2, 8)
   tide_maker:start(tide_advance_time / smoothing_factor)
   advance_time_dirty = false
 end
@@ -639,7 +767,7 @@ function enc(n, d)
   elseif not editing_buoys() then
     if n == 2 then
       tide_info_overlay_countdown = 10
-      tide_advance_time = util.clamp(tide_advance_time + d * 0.001, 0.1, 1.0)
+      tide_advance_time = math.max(tide_advance_time + d * 0.001, 0.1)
       advance_time_dirty = true
     end
     if n == 3 then
@@ -656,10 +784,19 @@ function enc(n, d)
       
       old_value = buoy_editing_prototype.options[option_config.name]
       if option_config.option_range then
-        new_value = util.clamp(
-          old_value + (d * option_config.option_step_value),
-          option_config.option_range[1],
-          option_config.option_range[2])
+        range_min = option_config.option_range[1]
+        range_max = option_config.option_range[2]
+        
+        -- ranges can be defined in terms of other option values, this is useful
+        -- for setting zenith/nadir points
+        if type(range_min) == "string" then
+          range_min = buoy_editing_prototype.options[range_min] + 1
+        end
+        if type(range_max) == "string" then
+          range_max = buoy_editing_prototype.options[range_max] - 1
+        end
+        
+        new_value = util.clamp(old_value + (d * option_config.option_step_value), range_min, range_max)
       else
         new_value = util.clamp(old_value + d, 1, #option_config.options)
       end
@@ -1320,8 +1457,9 @@ function Buoy:update_depth(new_depth)
   
   self:update_volume()
   self:update_panning()
+  self:update_filtering()
   
-  if self:newly_exceeds_threshold() then
+  if self:newly_exceeds_play_threshold() then
     self:grab_softcut_buffer()
     -- if there are a lot of active uninterruptible buffers
     -- it's possible we might not be able to grab one
@@ -1332,12 +1470,23 @@ function Buoy:update_depth(new_depth)
     self.active_start_time = util.time()
     softcut.play(self.softcut_buffer, 1)
   end
+  
+  if self:newly_exceeds_reset_threshold() then
+    if not self:has_softcut_buffer() then
+      return
+    end
+    
+    -- update_sound will reset playhead position
+    self:update_sound()
+    self.active_start_time = util.time()
+  end
 end
 
 function Buoy:setup_softcut_params()
   self:update_sound()
   self:update_volume()
   self:update_panning()
+  self:update_filtering()
   self:update_rate()
   self:update_looping()
 end
@@ -1364,8 +1513,17 @@ function Buoy:grab_softcut_buffer()
   buffer_buoy_map[self.softcut_buffer] = self
 end
 
-function Buoy:newly_exceeds_threshold()
+function Buoy:newly_exceeds_reset_threshold()
   reset_threshold = self.options["reset threshold"]
+  if reset_threshold < 1 then
+    return false
+  end
+  
+  return (self.previous_depth < reset_threshold) and (self.depth >= reset_threshold)
+end
+
+function Buoy:newly_exceeds_play_threshold()
+  reset_threshold = self.options["play threshold"]
   if reset_threshold < 1 then
     return false
   end
@@ -1425,6 +1583,36 @@ function Buoy:update_option(name, value)
     self:update_rate()
   elseif name == "looping" then
     self:update_looping()
+  elseif name == "zenith volume" then
+    self:update_volume()
+  elseif name == "nadir volume" then
+    self:update_volume()
+  elseif name == "volume zenith point" then
+    self:update_volume()
+  elseif name == "volume nadir point" then
+    self:update_volume()
+  elseif name == "volume slew" then
+    self:update_level_slew()
+  elseif name == "zenith pan" then
+    self:update_panning()
+  elseif name == "nadir pan" then
+    self:update_panning()
+  elseif name == "pan zenith point" then
+    self:update_panning()
+  elseif name == "pan nadir point" then
+    self:update_panning()
+  elseif name == "pan slew" then
+    self:update_pan_slew()
+  elseif name == "filter type" then
+    self:update_filtering()
+  elseif name == "zenith filter cutoff" then
+    self:update_filtering()
+  elseif name == "nadir filter cutoff" then
+    self:update_filtering()
+  elseif name == "cutoff zenith point" then
+    self:update_filtering()
+  elseif name == "cutoff nadir point" then
+    self:update_filtering()
   end
 end
 
@@ -1435,6 +1623,7 @@ function Buoy:update_sound()
   
   details = self:sound_details()
   if not details then
+    self:release_softcut_buffer()
     return
   end
 
@@ -1458,8 +1647,36 @@ function Buoy:update_panning()
   
   ltp = self.options["nadir pan"]
   htp = self.options["zenith pan"]
-  new_pan = ltp + ((htp - ltp) * self:tide_ratio())
+  new_pan = ltp + ((htp - ltp) * self:tide_ratio("pan"))
   softcut.pan(self.softcut_buffer, new_pan)
+end
+
+function Buoy:update_filtering()
+  if not self:has_softcut_buffer() then
+    return
+  end
+  
+  ltc = self.options["nadir filter cutoff"]
+  htc = self.options["zenith filter cutoff"]
+  filter_type = self.options["filter type"]
+  new_cutoff = ltc + ((htc - ltc) * self:tide_ratio("cutoff"))
+  
+  softcut.post_filter_lp(self.softcut_buffer, 0)
+  softcut.post_filter_hp(self.softcut_buffer, 0)
+  softcut.post_filter_bp(self.softcut_buffer, 0)
+  softcut.post_filter_br(self.softcut_buffer, 0)
+  
+  if filter_type == 1 then
+    softcut.post_filter_lp(self.softcut_buffer, 1)
+  elseif filter_type == 2 then
+    softcut.post_filter_hp(self.softcut_buffer, 1)
+  elseif filter_type == 3 then
+    softcut.post_filter_bp(self.softcut_buffer, 1)
+  elseif filter_type == 4 then
+    softcut.post_filter_br(self.softcut_buffer, 1)
+  end
+
+  softcut.post_filter_fc(self.softcut_buffer, frequency_exp_convert(new_cutoff))
 end
 
 function Buoy:update_volume()
@@ -1469,12 +1686,18 @@ function Buoy:update_volume()
   
   ltv = self.options["nadir volume"]
   htv = self.options["zenith volume"]
-  new_level = ltv + ((htv - ltv) * self:tide_ratio())
+  new_level = ltv + ((htv - ltv) * self:tide_ratio("volume"))
   softcut.level(self.softcut_buffer, new_level)
 end
 
-function Buoy:tide_ratio()
-  return self.depth / params:get("max_depth")
+function Buoy:tide_ratio(param)
+  zp = self.options[param.." zenith point"]
+  np = self.options[param.." nadir point"]
+  range_size = zp - np
+  effective_depth = util.clamp(self.depth, np, zp) - np
+  return effective_depth / range_size
+
+  -- return self.depth / params:get("max_depth")
 end
 
 function Buoy:update_looping()
@@ -1483,6 +1706,34 @@ function Buoy:update_looping()
   end
   
   softcut.loop(self.softcut_buffer, self:is_looping() and 1 or 0)
+end
+
+function Buoy:update_level_slew()
+  if not self:has_softcut_buffer() then
+    return
+  end
+  
+  slew_time = self.options["volume slew"]
+  -- "auto" slew
+  if slew_time < 0 then
+    slew_time = tide_advance_time
+  end
+  
+  softcut.level_slew_time(self.softcut_buffer, slew_time)
+end
+
+function Buoy:update_pan_slew()
+  if not self:has_softcut_buffer() then
+    return
+  end
+  
+  slew_time = self.options["pan slew"]
+  -- "auto" slew
+  if slew_time < 0 then
+    slew_time = tide_advance_time
+  end
+  
+  softcut.pan_slew_time(self.softcut_buffer, slew_time)
 end
 
 function Buoy:is_looping()
