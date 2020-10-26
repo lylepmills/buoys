@@ -2,7 +2,7 @@
 
 buoys is an app for [norns](https://monome.org/norns/).
 
-READ THIS FIRST: If you're just trying to get started with buoys, make sure to look below for the instructions on reaching "meta mode". You'll need to know how to do that so you can load samples into the app. Otherwise, if docs aren't your thing, most things should be possible to figure out on your own with a little imagination.
+READ THIS FIRST: If you're just trying to get started with buoys, make sure to look below for the instructions on reaching "meta mode". You'll need to know how to do that so you can load samples into the app. Otherwise, if docs aren't your thing, most things should be possible to figure out on your own with a little imagination :-)
 
 ## Concept
 
@@ -48,6 +48,9 @@ The experience of using an arc definitely enhances buoys, however all the parame
 **Third ring** - Tide angle. Adjusts the onset angle of the tide from -60 degrees to +60 degrees.
 
 **Fourth ring** - Dispersion. Adjusts the tendency of brighter tides to disperse into dimmer ones. By default it's set to a moderate level, to simulate reality, but reality is only a starting point. You can push it up or down from there. In the middle there is a dead zone of no dispersion, which is indicated by the lights when all the leds around the ring are on but at the dimmest level. If you continue CCW from there you reach the mysterious range of negative dispersion, where dimmer tides instead coalesce into brighter ones.
+
+## Notes / Errata
+buoys is not intended to be a perfect physical simulation of waves moving in water, or even a very good one. It's just good enough to get a nice-enough looking approximation, and many corners have been cut. Even so, it's not impossible to overtax the norns processor by pushing it to extremes. Several safeguards have been put in place to make it harder to shoot yourself in the foot, but these aren't guaranteed to work 100% of the time so just bear that in mind. Generally speaking the more big tides are on the grid at any given time, the harder the physical simulation is having to work. By the same token the app may try to prevent you from doing things that it knows are going to overtax it, for instance setting too fast of a tide advance time with high clock multipliers (you'll get a warning and the clock multiplier will automatically downshift). You have been warned.
 
 ## Parameters Guide
 Coming soon
