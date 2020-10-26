@@ -1,18 +1,13 @@
--- pilings_v37.lua
--- simpler reverb macro
--- make tide_shape_index a param
+-- pilings_v38.lua
+-- crow input improvements
+---- cv ins for four main tide params
+---- preventing both from being set to the same value except none
+-- crow trigger output improved to use a/s/l
 -- tidal influencer/activator/lightshow
-
--- TODO LIST
--- REMAINING FEATURES
--- autosave periodically?
 
 -- LAST FEW THINGS
 -- use local variables
--- test midi mapping
 -- organize into libs?
-
-
 
 -- NOTES FOR RELEASE
 -- not a perfect physical simulation, not intended to be
@@ -23,33 +18,32 @@
 ---- decrease max height (can use options menu to force this)
 ---- mute rows that aren't needed
 
-
 -- IDEAS FOR LATER VERSIONS
 -- 1. negative rates
 -- 2. buffer position modulation
 -- 3. live input processing
 -- 4. stereo samples
--- 5. better alternate sample rate support
---    (https://llllllll.co/t/norns-2-0-softcut/20550/176)
--- 6. expanded midi support (note on triggers, velocity, poly aftertouch?)
--- 7. find a good way to support loading samples from multiple folders
--- 8. filter slew options (when possible in softcut)
--- 9. use loop-point-crossing callback in softcut when possible
--- 10. MYSTERY E1 FEATURE???
--- 11. more realistic behavior when tides exceed max tide depth, e.g.
---    when a bunch of them get stuck up against a wall
+-- 5. expanded midi support (note on triggers, velocity, poly aftertouch?)
+-- 6. find a good way to support loading samples from multiple folders
+-- 7. filter slew options (when possible in softcut)
+-- 8. use loop-point-crossing callback (when possible in softcut)
+-- 9. MYSTERY E1 FEATURE???
+-- 10. more realistic behavior when tides exceed max tide depth, e.g.
+--     when a bunch of them get stuck up against a wall
 
 -- ACKNOWLEDGEMENTS
--- Thanks to John Sloan for feedback on the concept and the interface
+-- Thanks John Sloan for feedback on the concept and the interface
 -- at several points along the way.
--- Thanks to @zebra for building softcut and answering my softcut questions.
--- I borrowed some file/folder loading logic from Timber Player, and 
--- some midi stuff from Changes, thanks @markeats.
+-- Thanks @zebra for building the wonderful softcut and answering 
+-- my softcut questions.
+-- Thanks @markeats - I borrowed some file/folder loading logic from
+-- Timber Player, and some midi stuff from Changes.
 
 fileselect = require "fileselect"
 
 RUN = true
-RUN_SIMPLE = false
+RUN_SIMPLE = true
+RUN_DEBUG = false
 
 DISPERSION_MULTIPLE = 0.001
 
@@ -78,7 +72,9 @@ LONG_PRESS_TIME = 1.0
 BACKGROUND_METRO_TIME = 0.1
 POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
 META_MODE_KEYS = { { x=1, y=1 }, { x=1, y=8 }, { x=16, y=1 }, { x=16, y=8 } }
-META_MODE_OPTIONS = { "choose sample folder", "clear inactive buoys", "save state", "load state", "exit" }
+META_MODE_OPTIONS = { "choose sample folder", "clear inactive buoys", "save preset", "load preset", "exit" }
+CROW_INPUT_OPTIONS = { "none", "clock", "run", "start/stop", "reset", "cv tide height", "cv tide shape", "cv tide angle", "cv dispersion" }
+
 NUM_MIDI_CLOCKS_PER_CHECK = 24
 NUM_CROW_CLOCKS_PER_CHECK = 8
 -- higher standard for midi because we get a lot more clocks to work with
@@ -689,11 +685,16 @@ function init()
     tide_gap = 16
   end
   
+  if RUN_DEBUG then
+    -- params:set("crow_input_2", 8)
+  end
+  
   if RUN then
     tide_maker = metro.init(smoothly_make_tides, current_tide_delta)
     tide_maker:start()
     background_metro = metro.init(background_metro_tasks, BACKGROUND_METRO_TIME)
     background_metro:start()
+    -- TODO - start a slower metro for saving the current state to the auto slot
   end
 end
 
@@ -749,6 +750,72 @@ function dispersion_updated_action(dispersion)
   end
 end
 
+function crow_input_1_updated_action(mode_index)
+  input_2_mode = params:get("crow_input_2")
+  
+  -- don't allow both crow inputs to be set to the same mode, except "none"
+  if (mode_index ~= 1) and (mode_index == input_2_mode) then
+    if mode_index < crow_input_1_previous_mode then
+      -- going down
+      if mode_index - 1 >= 1 then
+        mode_index = mode_index - 1
+      else
+        mode_index = mode_index + 1
+      end
+    else
+      -- going up
+      if mode_index + 1 <= #CROW_INPUT_OPTIONS then
+        mode_index = mode_index + 1
+      else
+        mode_index = mode_index - 1
+      end
+    end
+    
+    params:set("crow_input_1", mode_index)
+  end
+  
+  if mode_index <= 5 then
+    crow.input[1].mode("change", 4.5, 0.25, "both")
+  else
+    crow.input[1].mode("stream", 0.1)
+  end
+  
+  crow_input_1_previous_mode = mode_index
+end
+
+function crow_input_2_updated_action(mode_index)
+  input_1_mode = params:get("crow_input_1")
+  
+  -- don't allow both crow inputs to be set to the same mode, except "none"
+  if (mode_index ~= 1) and (mode_index == input_1_mode) then
+    if mode_index < crow_input_2_previous_mode then
+      -- going down
+      if mode_index - 1 >= 1 then
+        mode_index = mode_index - 1
+      else
+        mode_index = mode_index + 1
+      end
+    else
+      -- going up
+      if mode_index + 1 <= #CROW_INPUT_OPTIONS then
+        mode_index = mode_index + 1
+      else
+        mode_index = mode_index - 1
+      end
+    end
+    
+    params:set("crow_input_2", mode_index)
+  end
+  
+  if mode_index <= 5 then
+    crow.input[2].mode("change", 4.5, 0.25, "both")
+  else
+    crow.input[2].mode("stream", 0.1)
+  end
+  
+  crow_input_2_previous_mode = mode_index
+end
+
 function max_depth_updated_action(max_depth)
   -- as a side effect of recomputing depths, particles_to_tide_depths will clear excess particles
   particles_to_tide_depths()
@@ -797,13 +864,20 @@ function init_params()
   params:add{ type = "number", id = "angle", name = "wave angle", min = -60, max = 60, default = 0, formatter = degree_formatter }
   params:add{ type = "number", id = "dispersion", name = "dispersion", min = -25, max = 25, default = 10, action = dispersion_updated_action }
   params:add_separator()
-  params:add{ type = "option", id = "crow_input_1", name = "crow input 1", options = { "clock", "run", "start/stop", "reset" } }
-  params:add{ type = "option", id = "crow_input_2", name = "crow input 2", options = { "run", "start/stop", "reset" } }
+  params:add{ type = "option", id = "crow_input_1", name = "crow input 1", options = CROW_INPUT_OPTIONS, 
+              action = crow_input_1_updated_action, default = 2 }
+  params:add{ type = "option", id = "crow_input_2", name = "crow input 2", options = CROW_INPUT_OPTIONS, 
+              action = crow_input_2_updated_action }
   params:add_separator()
   params:add{ type = "number", id = "min_bright", name = "background brightness", min = 1, max = 3, default = 1 }
   params:add{ type = "number", id = "max_depth", name = "max depth", min = 8, max = 14, default = 14, action = max_depth_updated_action }
   params:add{ type = "option", id = "arc_orientation", name = "arc orientation", options = { "horizontal", "vertical" } }
+  
+  crow_input_1_previous_mode = params:get("crow_input_1")
+  crow_input_2_previous_mode = params:get("crow_input_2")
 end
+
+
 
 function force_tide_update_next_tick()
   smoothing_counter = smoothing_factor - 1
@@ -930,33 +1004,51 @@ function process_midi_clock()
   set_advance_time_with_external_clocks()
 end
   
-function process_crow_first_input(v)
-  if params:get("crow_input_1") == 1 and v == 1 then  -- clock
+function process_crow_first_input_change(v)
+  process_crow_input_change(1, v)
+end
+
+function process_crow_second_input_change(v)
+  process_crow_input_change(2, v)
+end
+
+function process_crow_input_change(idx, v)
+  input_mode = params:get("crow_input_"..idx)
+
+  if input_mode == 2 and v == 1 then  -- clock
     process_crow_clock()
-  elseif params:get("crow_input_1") == 2 then  -- run
+  elseif input_mode == 3 then  -- run
     if v == 0 then
       pause_tides()
     else
       unpause_tides()
     end
-  elseif params:get("crow_input_1") == 3 and v == 1 then  -- start/stop
+  elseif input_mode == 4 and v == 1 then  -- start/stop
     toggle_tides_paused()
-  elseif params:get("crow_input_1") == 4 and v == 1 then  -- reset
+  elseif input_mode == 5 and v == 1 then  -- reset
     reset_tides()
   end
 end
 
-function process_crow_second_input(v)
-  if params:get("crow_input_2") == 1 then  -- run
-    if v == 0 then
-      pause_tides()
-    else
-      unpause_tides()
-    end
-  elseif params:get("crow_input_2") == 2 and v == 1 then  -- start/stop
-    toggle_tides_paused()
-  elseif params:get("crow_input_2") == 3 and v == 1 then  -- reset
-    reset_tides()
+function process_crow_first_input_stream(v)
+  process_crow_input_stream(1, v)
+end
+
+function process_crow_second_input_stream(v)
+  process_crow_input_stream(2, v)
+end
+
+function process_crow_input_stream(idx, v)
+  input_mode = params:get("crow_input_"..idx)
+
+  if input_mode == 6 then  -- cv tide height
+    params:set("tide_height_multiplier", util.linlin(0.0, 5.0, 0.0, 1.0, v))
+  elseif input_mode == 7 then  -- cv tide shape
+    params:set("tide_shape_index", util.linlin(0.0, 5.0, 1.0, 8.99, v))
+  elseif input_mode == 8 then  -- cv tide tide angle
+    params:set("angle", util.linlin(-5.0, 5.0, -60, 60, v))
+  elseif input_mode == 9 then  -- cv dispersion
+    params:set("dispersion", util.linlin(-5.0, 5.0, -25, 25, v))
   end
 end
 
@@ -1043,10 +1135,22 @@ function init_crow()
   last_crow_clock_received = nil
   last_crow_clock_era_began = nil
   crow_clock_era_counter = 0
-  crow.input[1].change = process_crow_first_input
-  crow.input[1].mode("change", 4.5, 0.25, "both")
-  crow.input[2].change = process_crow_second_input
-  crow.input[2].mode("change", 4.5, 0.25, "both")
+  crow.input[1].change = process_crow_first_input_change
+  crow.input[2].change = process_crow_second_input_change
+  crow.input[1].stream = process_crow_first_input_stream
+  crow.input[2].stream = process_crow_second_input_stream
+
+  if params:get("crow_input_1") <= 5 then
+    crow.input[1].mode("change", 4.5, 0.25, "both")
+  else
+    crow.input[1].mode("stream", 0.1)
+  end
+  
+  if params:get("crow_input_2") <= 5 then
+    crow.input[2].mode("change", 4.5, 0.25, "both")
+  else
+    crow.input[2].mode("stream", 0.1)
+  end
 end
 
 function softcut_event_phase_callback(voice, phase)
@@ -1330,6 +1434,7 @@ end
 
 function key(n, z)
   key_states[n] = z
+  -- TODO - handle save_preset_mode and load_preset_mode
   if meta_mode then
     if z == 1 then
       return
@@ -1343,9 +1448,10 @@ function key(n, z)
     elseif meta_mode_option == "clear inactive buoys" then
       clear_inactive_buoys()
       exit_meta_mode()
-    elseif meta_mode_option == "save state" then
-      -- TODO - save/load state logic
-    elseif meta_mode_option == "load state" then
+    elseif meta_mode_option == "save preset" then
+      enter_save_preset_select()
+    elseif meta_mode_option == "load preset" then
+      enter_load_preset_select()
     elseif meta_mode_option == "exit" then
       exit_meta_mode()
     end
@@ -1364,6 +1470,15 @@ function key(n, z)
     
     redraw_lights()
   end
+end
+
+-- TODO - finish
+function enter_save_preset_select()
+  save_preset_mode = true
+end
+
+function enter_load_preset_select()
+  load_preset_mode = true
 end
 
 function exit_meta_mode()
@@ -1399,6 +1514,7 @@ function enc(n, d)
     return
   end
   
+  -- TODO - handle save_preset_mode and load_preset_mode
   if meta_mode then
     if n == 2 then
       meta_mode_option_index = util.clamp(meta_mode_option_index + d, 1, #META_MODE_OPTIONS)
@@ -1819,7 +1935,11 @@ function redraw()
   screen.font_size(8)
   screen.level(15)
   
-  if meta_mode then
+  if save_preset_mode then
+    redraw_save_preset_mode_screen()
+  elseif load_preset_mode then
+    redraw_load_preset_mode_screen()
+  elseif meta_mode then
     redraw_meta_mode_screen()
   elseif editing_buoys() then
     redraw_edit_buoy_screen()
@@ -1834,6 +1954,15 @@ function redraw()
   end
   
   screen.update()
+end
+
+-- TODO - finish
+function redraw_save_preset_mode_screen()
+  
+end
+
+function redraw_load_preset_mode_screen()
+  
 end
 
 function redraw_meta_mode_screen()
@@ -2597,10 +2726,8 @@ function Buoy:update_crow_trigger()
   end
   
   if (self.previous_depth < trigger_threshold) and (self.depth >= trigger_threshold) then
-    crow.output[output_index].slew = 0
-    crow.output[output_index].volts = 8
-    crow.output[output_index].slew = 0.1
-    crow.output[output_index].volts = 0
+    crow.output[output_index].action = "pulse(0.05, 8.0)"
+    crow.output[output_index]()
   end
 end
 
@@ -2798,6 +2925,7 @@ end
 -- grid
 
 g.key = function(x, y, z)
+  -- TODO - handle save_preset_mode and load_preset_mode
   if meta_mode then
     return
   end
@@ -2874,7 +3002,6 @@ function a.delta(n, d)
   if n == 1 then
     params:delta("tide_height_multiplier", d * 0.1)
   elseif n == 2 then
-    print("delta d: "..d)
     -- we circumvent the simpler params:delta approach in order to support
     -- circular transitions between the 8 tide shapes (8->1 and 1->8)
     tide_shape_index = params:get("tide_shape_index") + (d * 0.01)
