@@ -1,12 +1,10 @@
--- pilings_v16.lua
--- E2+E3 functionality (wave overlay)
+-- pilings_v17.lua
+-- improve wave generation for angled waves
 
 -- TODO LIST
 -- use local variables
 -- tune defaults
 ---- especially collisions
----- wave speed, wave interval, filter cutoff?
----- more wave shaping control, attack/decay type thing?
 -- allow diagonal movement (option)?
 ---- POTENTIAL_DISPERSION_DIRECTIONS?
 ---- also roll_forward()?
@@ -18,9 +16,6 @@
 -- midi CC outputs? midi sync?
 -- some kind of estimation to make it faster when there are a lot of particles?
 -- use E1 as a macro control?
-
--- NEXT UP
----- tide gaps / tide angle stuff
 
 RUN = true
 
@@ -48,7 +43,6 @@ LONG_PRESS_TIME = 1.0
 BACKGROUND_METRO_TIME = 0.1
 POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
 SMOOTHING_FACTOR = 4
-MAX_TIDE_GAP = 100
 
 -- TODO - could these be tied to the rate at which waves are moving? ("auto" option)
 RATE_SLEW = 0.1
@@ -351,8 +345,7 @@ function enc(n, d)
     -- TODO - make less sensitive?
     if n == 3 then
       tide_info_overlay_countdown = 10
-      -- TODO - do we really need a MAX_TIDE_GAP
-      tide_gap = util.clamp(tide_gap + d, 1, MAX_TIDE_GAP)
+      tide_gap = math.max(tide_gap + d, 1)
     end
   else
     if n == 2 then
@@ -435,7 +428,9 @@ end
 
 function new_tide(position)
   for y = 1, g.rows do
-    num_new_particles = tide_shape()[position - current_angle_gaps[y]] or 0
+    -- TODO - figure out wave sequencing here
+    tide_index = ((position - current_angle_gaps[y]) % tide_gap) + 1
+    num_new_particles = tide_shape()[tide_index] or 0
     num_new_particles = math.floor(num_new_particles * tide_height_multiplier + 0.5)
 
     for _ = 1, num_new_particles do
