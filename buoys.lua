@@ -1,6 +1,8 @@
 -- buoys
 -- tidal influencer/activator
 --
+-- llllllll.co/t/37639
+--
 -- grid required (varibright 128)
 -- enhanced by arc
 -- crow + midi capable
