@@ -29,7 +29,7 @@ Each buoy can be associated with a sound. As the buoy gets lifted up and down by
 
 **E2** - makes adjustments to the tide advance time. The tide advance time is how long it takes, in seconds, for the tide to move one grid square from the left to the right. If the app is being synced to a clock either via crow or via midi in, this instead controls a clock multiplier setting.
 
-**E3** - makes adjustments to the tide gap. The tide gap is how many tide advancements occur between new tides. In other words the overall time it takes between tides is (tide advance time * tide gap).
+**E3** - makes adjustments to the tide gap. The tide gap is how many tide advancements occur between new tides. In other words the overall time it takes between tides is (tide advance time * tide gap). It's possible to set a tide gap that is less than the width of the tide, so for instance a tide gap of 3 will just constantly cycle between the first 3 segments of the wave (1, 2, 3, 1, 2, 3...).
 
 ### Grid
 **Long press and hold** any key on the grid to edit a buoy there. You can press more than one key and buoys at all held spots will be edited. 
@@ -65,7 +65,7 @@ buoys is not intended to be a perfect physical simulation of waves moving in wat
 
 **unpausing** - resume vs reset buoys. If set to resume, buoys will continue playing back from wherever they are in their buffer (regardless of the "pausing" setting). If set to reset buoys, They will reset to their start points. This can be use as a means of syncing loops.
 
-**tide height multiplier**, **tide shape index**, **tide angle**, **dispersion** - same as described above in the arc section. Since these are regular norns app parameters they can be mapped to an external midi controller. The only difference is that without an arc, you won't get the circular morphing of the tide shape index.
+**tide height multiplier**, **tide shape index**, **tide angle**, **dispersion** - same as described above in the arc section. Since these are regular norns app parameters they can be mapped to an external midi controller. The only difference is that without an arc, you won't get the ability to wrap around the tide shape index (8->1).
 
 **crow input 1**, **crow input 2** - note that both crow inputs cannot be set to the same option, except "none"
 - none - the input does nothing
