@@ -45,7 +45,7 @@
 -- ring 3 = tide angle
 -- ring 4 = dispersion
 --
--- @lylem v0.0
+-- @lylem v1.0.0
 
 -- IDEAS FOR LATER VERSIONS
 -- 1. finish preset saving/loading
