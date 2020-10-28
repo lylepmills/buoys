@@ -4,6 +4,8 @@ buoys is an app for [norns](https://monome.org/norns/).
 
 READ THIS FIRST: If you're just trying to get started with buoys, make sure to look below for the instructions on reaching "meta mode". You'll need to know how to do that so you can load samples into the app. Otherwise, if docs aren't your thing, most things should be possible to figure out on your own with a little imagination :-)
 
+Discussion at https://llllllll.co/t/buoys/37639.
+
 ## Concept
 
 A tide of light moves across the grid, activating sounds and modulations as the tide interacts with any number of "buoys" that have been placed anywhere in its path. The core physical metaphor is that of a wave/tide of water moving through space and having interactions with objects in the water along the way. Besides buoys, pilings are the other type of object that can be placed in the water. Unlike buoys, pilings do not yield to the tide, the tide yields to them. The tide will be disrupted by pilings it runs into as it moves along. On the grid, brighter lights correspond to deeper "waters".
@@ -19,7 +21,7 @@ Each buoy can be associated with a sound. As the buoy gets lifted up and down by
 ### Norns
 **Screen** - the default view shows pilings and buoys. Pilings are displayed as solid circles, whereas buoys are displayed as a square within a square. When that buoy is actively playing a sound, the inner square will light up brighter.
 
-**K2** - toggles between two ways of displaying buoys on the grid. By default they are not shown on the grid, however their locations are still visible on the norns screen. When K2 is pressed, they will instead appear at maximum brightness. This is so you can easily find them when you need to, but also enjoy the waves display on its own without those bright lights when you don't need them.
+**K2** - toggles between two ways of displaying buoys on the grid. By default they are not shown on the grid, however their locations are still visible on the norns screen. When K2 is pressed, they will instead appear at maximum brightness. This is so you can easily find them when you need to, but also enjoy the tides display on its own without those bright lights when you don't need them.
 
 **K3** - pauses and unpauses the tides. There are various options for how the sounds should react when the tides are paused in the params page.
 
@@ -29,7 +31,7 @@ Each buoy can be associated with a sound. As the buoy gets lifted up and down by
 
 **E2** - makes adjustments to the tide advance time. The tide advance time is how long it takes, in seconds, for the tide to move one grid square from the left to the right. If the app is being synced to a clock either via crow or via midi in, this instead controls a clock multiplier setting.
 
-**E3** - makes adjustments to the tide gap. The tide gap is how many tide advancements occur between new tides. In other words the overall time it takes between tides is (tide advance time * tide gap). It's possible to set a tide gap that is less than the width of the tide, so for instance a tide gap of 3 will just constantly cycle between the first 3 segments of the wave (1, 2, 3, 1, 2, 3...).
+**E3** - makes adjustments to the tide gap. The tide gap is how many tide advancements occur between new tides. In other words the overall time it takes between tides is (tide advance time * tide gap). It's possible to set a tide gap that is less than the width of the tide, so for instance a tide gap of 3 will just constantly cycle between the first 3 segments of the tide (1, 2, 3, 1, 2, 3...).
 
 ### Grid
 **Long press and hold** any key on the grid to edit a buoy there. You can press more than one key and buoys at all held spots will be edited. 
@@ -43,14 +45,11 @@ The experience of using an arc definitely enhances buoys, however all the parame
 
 **First ring** - Tide height multiplier. This can scale up or down the overall height of your tides without having to manually edit the tide shape in the tide shape editor.
 
-**Second ring** - Tide shape. This smoothly morphs between the 8 wave shapes (circularly) as defined in the wave shape editor, with interpolation between adjacent shapes.
+**Second ring** - Tide shape. This smoothly morphs between the 8 tide shapes (circularly) as defined in the tide shape editor, with interpolation between adjacent shapes.
 
 **Third ring** - Tide angle. Adjusts the onset angle of the tide from -60 degrees to +60 degrees.
 
 **Fourth ring** - Dispersion. Adjusts the tendency of brighter tides to disperse into dimmer ones. By default it's set to a moderate level, to simulate reality, but reality is only a starting point. You can push it up or down from there. In the middle there is a dead zone of no dispersion, which is indicated by the lights when all the leds around the ring are on but at the dimmest level. If you continue CCW from there you reach the mysterious range of negative dispersion, where dimmer tides instead coalesce into brighter ones.
-
-## Notes / Errata
-buoys is not intended to be a perfect physical simulation of waves moving in water, or even a very good one. It's just good enough to get a nice-enough looking approximation, and many corners have been cut. Even so, it's not impossible to overtax the norns processor by pushing it to extremes. Several safeguards have been put in place to make it harder to shoot yourself in the foot, but these aren't guaranteed to work 100% of the time so just bear that in mind. Generally speaking the more big tides are on the grid at any given time, the harder the physical simulation is having to work. By the same token the app may try to prevent you from doing things that it knows are going to overtax it, for instance setting too fast of a tide advance time with high clock multipliers (you'll get a warning and the clock multiplier will automatically downshift). You have been warned.
 
 ## Parameters Guide
 
@@ -85,4 +84,35 @@ buoys is not intended to be a perfect physical simulation of waves moving in wat
 **arc orientation** - if set to horizontal, the LED animations that accompany the four arc encoders will be oriented for horizontal use, ditto for vertical.
 
 ### Buoy parameters
+Note you'll only see crow parameters if you have a crow attached to the norns.
+
+**sound** - the sample file you'll be working with, if any.
+
+**looping** - whether or not the sound selection should play in a loop, or as a one-shot when activated by a tide crossing the play threshold.
+
+**uninterruptible** - whether other buoys should be able to steal the voice from this one once it has begun playing (buoys is built on softcut, and softcut only has 6 simultaneous voices). Note that if a sound is both looping and uninterruptible, once initially activated it will play back indefinitely.
+
+**octave/semitone/cent offset** - here you can control the pitch of the sample you are playing back. Higher pitches, higher playback rates.
+
+**play threshold** - the tide depth which, when reached, will initiate playback of the sound.
+
+**reset threshold** - the tide depth which, when reached, will reset playback of the sound to it's start point.
+
+**zenith/nadir volume, pan, filter cutoff, filter Q, rate, midi CC, crow voltage** - throughout, zenith and nadir refer to the high and low points of the tide. By default these are 14 and 0 respectively. By setting different parameter values for the zenith and nadir you make it such that the given parameter will be modulated by the tide depth. The value of the parameter need not be higher for the zenith than the nadir, it also works the other way around.
+
+### Extended buoy parameters
+If extended params are enabled in the main app parameters, you'll see some extras that will give you even more control.
+
+**sound start point/end point** - set the start and end points of the sample (applies to both one-shots and loops).
+
+**play/reset threshold hysteresis** - set how far below the threshold the tide must return before it triggers again. For instance if play threshold is 5 and play threshold hysteresis is 2, then after the tide reaches a depth of 5 and begins playing once, it must drop at least to a depth of 3 before reaching 5 will get it to play again.
+
+**volume/pan/rate slew** - set the slew time for these values to adjust between tide "steps" (one unit of the tide advance time). By default they are set to auto, which will have them take exactly the length of the tide advance time to reach the new parameter levels. Not all parameters support slew at this time due to limitations in softcut, but hopefully in the near future those too can be slewed.
+
+**volume/pan/cutoff/Q/rate zenith/nadir points** - adjust what is considered the high and low point of the tide as it pertains to modulation of the given parameter. For instance if pan nadir point is set to 6, pan zenith point is set to 10, and the nadir pan is set to 100L, and the zenith pan is set to 100R, then for any tide depth at or below 6, the pan setting will be at 100L, whereas at any tide depth at or above 10, the pan setting will be 100R. In between the parameter value will be linearly interpolated as usual, e.g. at a tide depth of 8 the pan setting will be centered.
+
+## Crow and Midi
 Coming soon
+
+## Notes / Errata
+buoys is not intended to be a perfect physical simulation of tides moving in water, or even a very good one. It's just good enough to get a nice-enough looking approximation, and many corners have been cut. Even so, it's not impossible to overtax the norns processor by pushing it to extremes. Several safeguards have been put in place to make it harder to shoot yourself in the foot, but these aren't guaranteed to work 100% of the time so just bear that in mind. Generally speaking the more big tides are on the grid at any given time, the harder the physical simulation is having to work. By the same token the app may try to prevent you from doing things that it knows are going to overtax it, for instance setting too fast of a tide advance time with high clock multipliers (you'll get a warning and the clock multiplier will automatically downshift). You have been warned.
