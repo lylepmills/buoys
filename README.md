@@ -94,7 +94,7 @@ Note you'll only see crow parameters if you have a crow attached to the norns.
 
 **octave/semitone/cent offset** - here you can control the pitch of the sample you are playing back. Higher pitches, higher playback rates.
 
-**play threshold** - the tide depth which, when reached, will initiate playback of the sound.
+**play threshold** - the tide depth which, when reached, will initiate playback of the sound. Note that if we've already reached the maximum number of concurrent softcut voices (6), this buoy will attempt to steal a voice from other buoys, oldest first excluding anything marked uninterruptible. If too many uninterruptible buoys are already playing, this buoy will not be able to play.
 
 **reset threshold** - the tide depth which, when reached, will reset playback of the sound to it's start point.
 
@@ -112,7 +112,11 @@ If extended params are enabled in the main app parameters, you'll see some extra
 **volume/pan/cutoff/Q/rate zenith/nadir points** - adjust what is considered the high and low point of the tide as it pertains to modulation of the given parameter. For instance if pan nadir point is set to 6, pan zenith point is set to 10, and the nadir pan is set to 100L, and the zenith pan is set to 100R, then for any tide depth at or below 6, the pan setting will be at 100L, whereas at any tide depth at or above 10, the pan setting will be 100R. In between the parameter value will be linearly interpolated as usual, e.g. at a tide depth of 8 the pan setting will be centered.
 
 ## Crow and Midi
-Coming soon
+buoys integrates with both crow and midi inputs and outputs. For crow, buoys has several input types (see more details in the App Parameters section), for midi currently only clocks and transport messages (i.e. start/stop) are supported.
+
+buoys has its own hand-rolled approach to clocking (for both crow and midi) which emphasizes getting the tide advancement to happen strictly on the beat. This works best when the external clock is constant; buoys is not especially good at handling clock rates that are changing over time, so if clock rate changes expect some short-term jumpiness in the appearance of the tide advancement.
+
+In terms of outputs, buoys currently supports three output types for crow and only one for midi. For crow, you can output either a variable voltage, a trigger, or a gate. The voltage corresponds to tide depth similar to modulation of the sound parameters. The trigger/gate go high or low based on crossing a certain threshold for tide depth. For midi, the only output type (currently) is midi CC messages.
 
 ## Notes / Errata
 buoys is not intended to be a perfect physical simulation of tides moving in water, or even a very good one. It's just good enough to get a nice-enough looking approximation, and many corners have been cut. Even so, it's not impossible to overtax the norns processor by pushing it to extremes. Several safeguards have been put in place to make it harder to shoot yourself in the foot, but these aren't guaranteed to work 100% of the time so just bear that in mind. Generally speaking the more big tides are on the grid at any given time, the harder the physical simulation is having to work. By the same token the app may try to prevent you from doing things that it knows are going to overtax it, for instance setting too fast of a tide advance time with high clock multipliers (you'll get a warning and the clock multiplier will automatically downshift). You have been warned.
