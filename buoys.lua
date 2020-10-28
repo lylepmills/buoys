@@ -1691,8 +1691,8 @@ function new_tide(position)
     end
     num_new_particles = util.round(num_new_particles * params:get("tide_height_multiplier"))
     
-    while num_new_particles > 0 do
-      if not is_piling(1, y) then
+    if not is_piling(1, y) then
+      while num_new_particles > 0 do
         particle = {}
         particle.x_pos = 1
         particle.x_vel = 1.0
