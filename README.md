@@ -62,7 +62,7 @@ The experience of using an arc definitely enhances buoys, however all the parame
 
 **pausing** - pause buoys vs continue. If set to pause buoys, playback of any sounds associated with buoys will pause immediately when the tides pause. If set to continue, they will not - non-looping buoys will play to their end point, and looping buoys will continue looping indefinitely.
 
-**unpausing** - resume vs reset buoys. If set to resume, buoys will continue playing back from wherever they are in their buffer (regardless of the "pausing" setting). If set to reset buoys, They will reset to their start points. This can be use as a means of syncing loops.
+**unpausing** - resume vs reset buoys. If set to resume, buoys will continue playing back from wherever they are in their buffer (regardless of the "pausing" setting). If set to reset buoys, They will reset to their start points. This can be used as a means of syncing loops.
 
 **tide height multiplier**, **tide shape index**, **tide angle**, **dispersion** - same as described above in the arc section. Since these are regular norns app parameters they can be mapped to an external midi controller. The only difference is that without an arc, you won't get the ability to wrap around the tide shape index (8->1).
 
