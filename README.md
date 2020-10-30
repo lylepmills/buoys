@@ -62,7 +62,7 @@ The experience of using an arc definitely enhances buoys, however all the parame
 
 **pausing** - pause buoys vs continue. If set to pause buoys, playback of any sounds associated with buoys will pause immediately when the tides pause. If set to continue, they will not - non-looping buoys will play to their end point, and looping buoys will continue looping indefinitely.
 
-**unpausing** - resume vs reset buoys. If set to resume, buoys will continue playing back from wherever they are in their buffer (regardless of the "pausing" setting). If set to reset buoys, They will reset to their start points. This can be use as a means of syncing loops.
+**unpausing** - resume vs reset buoys. If set to resume, buoys will continue playing back from wherever they are in their buffer (regardless of the "pausing" setting). If set to reset buoys, They will reset to their start points. This can be used as a means of syncing loops.
 
 **tide height multiplier**, **tide shape index**, **tide angle**, **dispersion** - same as described above in the arc section. Since these are regular norns app parameters they can be mapped to an external midi controller. The only difference is that without an arc, you won't get the ability to wrap around the tide shape index (8->1).
 
@@ -116,7 +116,7 @@ buoys integrates with both crow and midi inputs and outputs. For crow, buoys has
 
 buoys has its own hand-rolled approach to clocking (for both crow and midi) which emphasizes getting the tide advancement to happen strictly on the beat. This works best when the external clock is constant; buoys is not especially good at handling clock rates that are changing over time, so if clock rate changes expect some short-term jumpiness in the appearance of the tide advancement.
 
-In terms of outputs, buoys currently supports three output types for crow and only one for midi. For crow, you can output either a variable voltage, a trigger, or a gate. The voltage corresponds to tide depth similar to modulation of the sound parameters. The trigger/gate go high or low based on crossing a certain threshold for tide depth. For midi, the only output type (currently) is midi CC messages.
+In terms of outputs, buoys currently supports three output types for crow and only one for midi. For crow, you can output either a variable voltage, a trigger, or a gate. The voltage corresponds to tide depth similar to modulation of the sound parameters, and can be unipolar or bipolar depending on the settings for the zenith/nadir voltages. The trigger/gate go high or low based on crossing a certain threshold for tide depth. For midi, the only output type (currently) is midi CC messages.
 
 ## Notes / Errata
 buoys is not intended to be a perfect physical simulation of tides moving in water, or even a very good one. It's just good enough to get a nice-enough looking approximation, and many corners have been cut. Even so, it's not impossible to overtax the norns processor by pushing it to extremes. Several safeguards have been put in place to make it harder to shoot yourself in the foot, but these aren't guaranteed to work 100% of the time so just bear that in mind. Generally speaking the more big tides are on the grid at any given time, the harder the physical simulation is having to work. By the same token the app may try to prevent you from doing things that it knows are going to overtax it, for instance setting too fast of a tide advance time with high clock multipliers (you'll get a warning and the clock multiplier will automatically downshift). You have been warned.
