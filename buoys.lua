@@ -45,20 +45,19 @@
 -- ring 3 = tide angle
 -- ring 4 = dispersion
 --
--- @lylem v1.0.0
+-- @lylem v1.1.0
 
 -- IDEAS FOR LATER VERSIONS
--- 1. finish preset saving/loading
--- 2. negative rates
--- 3. buffer position modulation
--- 4. live input processing
--- 5. stereo samples
--- 6. expanded midi support (note on triggers, velocity, poly aftertouch?)
--- 7. find a good way to support loading samples from multiple folders
--- 8. filter slew options (when possible in softcut)
--- 9. use loop-point-crossing callback (when possible in softcut)
--- 10. MYSTERY E1 FEATURE???
--- 11. more realistic behavior when tides exceed max tide depth, e.g.
+-- 1. negative rates
+-- 2. buffer position modulation
+-- 3. live input processing
+-- 4. stereo samples
+-- 5. expanded midi support (note on triggers, velocity, poly aftertouch?)
+-- 6. find a good way to support loading samples from multiple folders
+-- 7. filter slew options (when possible in softcut)
+-- 8. use loop-point-crossing callback (when possible in softcut)
+-- 9. MYSTERY E1 FEATURE???
+-- 10. more realistic behavior when tides exceed max tide depth, e.g.
 --     when a bunch of them get stuck up against a wall
 
 -- ACKNOWLEDGEMENTS
@@ -76,6 +75,7 @@ local DISPERSION_MULTIPLE = 0.001
 local ADVANCE_TIME = 0.2
 local SMOOTHING_FACTOR = 4
 local TIDE_GAP = 32
+local MAX_BRIGHTNESS = 15
 -- sinces waves move from left to right, they 
 -- will appear flipped vs these definitions
 local BASE_TIDE_SHAPES = {
@@ -96,6 +96,7 @@ local SAMPLE_SPACING_BUFFER_TIME = 0.5
 local MIN_TIDE_ADVANCE_TIME = 0.1
 local LONG_PRESS_TIME = 1.0
 local BACKGROUND_METRO_TIME = 0.1
+local AUTOSAVE_METRO_TIME = 60
 local POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
 local META_MODE_KEYS = { { x=1, y=1 }, { x=1, y=8 }, { x=16, y=1 }, { x=16, y=8 } }
 local META_MODE_OPTIONS = { "choose sample folder", "clear inactive buoys", "save preset", "load preset", "exit" }
@@ -559,8 +560,9 @@ function load_sound_folder(full_file_path)
   next_sample_start_location = 1.0
   
   folder, _ = split_file_path(full_file_path)
+  last_folder_loaded = folder
   
-  for _, filename in ipairs(fileselect.list) do
+  for _, filename in pairs(util.scandir(folder)) do
     filename_lower = filename:lower()
     
     if string.find(filename_lower, ".wav") or string.find(filename_lower, ".aif") or string.find(filename_lower, ".aiff") then
@@ -654,7 +656,14 @@ a = arc.connect()
 g = grid.connect()
 
 function init()
-  init_params()
+  init_all(true)
+end
+
+function init_all(full)
+  if full then
+    init_params()
+  end
+  
   -- set an initial value for dispersion_shadow_param
   dispersion_updated_action(params:get("dispersion"))
   
@@ -697,6 +706,7 @@ function init()
   external_clock_multiplier = 1
   dispersion_ui_brightnesses = {}
   sample_details = {}
+  
   for i = 1, 64 do
     dispersion_ui_brightnesses[i] = 0
   end
@@ -707,12 +717,29 @@ function init()
   init_softcut()
   init_crow()
   init_midi_in()
+  init_preset_selections()
   
-  tide_maker = metro.init(smoothly_make_tides, current_tide_delta)
-  tide_maker:start()
-  background_metro = metro.init(background_metro_tasks, BACKGROUND_METRO_TIME)
-  background_metro:start()
-  -- TODO: start a slower metro for saving the current state to the auto slot
+  autosave_metro_first_run = true
+  if full then
+    tide_maker = metro.init(smoothly_make_tides, current_tide_delta)
+    tide_maker:start()
+    background_metro = metro.init(background_metro_tasks, BACKGROUND_METRO_TIME)
+    background_metro:start()
+    autosave_metro = metro.init(autosave_tasks, AUTOSAVE_METRO_TIME)
+    autosave_metro:start()
+  end
+end
+
+function init_preset_selections()
+  current_preset_selection = { x=1, y=1 }
+  existing_saved_presets = fresh_grid(nil)
+  
+  for _, data_file in pairs(util.scandir(norns.state.data)) do
+    _, _, x, y = string.find(data_file, "^preset_(%d+)_(%d+).txt$")
+    if x and y then
+      existing_saved_presets[tonumber(y)][tonumber(x)] = true
+    end
+  end
 end
 
 function modulo_base_one(num, modulus)
@@ -867,10 +894,14 @@ function max_depth_updated_action(max_depth)
   end
 end
 
+function add_channel_style_param(pset)
+  pset:add{ type = "option", id = "channel_style", name = "channel style", options = { "open", "flume" } }
+end
+
 function init_params()
   params:add_group("BUOYS", 17)
   
-  params:add{ type = "option", id = "channel_style", name = "channel style", options = { "open", "flume" } }
+  add_channel_style_param(params)
   params:add{ type = "option", id = "extended_buoy_params", name = "extended buoy params", options = { "off", "on" } }
   params:add{ type = "option", id = "smoothing", name = "visual smoothing", options = { "off", "on" }, default = 2 }
   params:add{ type = "option", id = "pausing", name = "tides paused", options = { "pause buoys", "continue" } }
@@ -1173,6 +1204,12 @@ end
 function softcut_event_phase_callback(voice, phase)
   buoy = buffer_buoy_map[voice]
   
+  -- this generally shouldn't happen but could under certain
+  -- circumstances such as right after switching apps
+  if not buoy then
+    return
+  end
+
   if buoy:is_looping() then
     return
   end
@@ -1189,6 +1226,7 @@ function init_softcut()
 
   for i = 1, softcut.VOICE_COUNT do
     softcut.enable(i, 1)
+    softcut.play(i, 0)
     softcut.buffer(i, 1)
     softcut.level(i, 1.0)
     softcut.loop(i, 0)
@@ -1227,6 +1265,17 @@ end
 
 function external_clock_received_recently()
   return crow_clock_received_recently() or midi_clock_received_recently()
+end
+
+function autosave_tasks()
+  -- don't autosave on the first run. that way when you initially load the app
+  -- we don't overwrite the autosave from before (which would defeat the purpose)
+  if autosave_metro_first_run then
+    autosave_metro_first_run = false
+    return
+  end
+  
+  save_autosave_preset()
 end
 
 function background_metro_tasks()
@@ -1371,12 +1420,12 @@ end
 function update_dispersion_ui()
   for i = 1, 64 do
     if flip_coin(dispersion_factor()) then
-      dispersion_ui_brightnesses[i] = negative_dispersion() and 1 or 15
+      dispersion_ui_brightnesses[i] = negative_dispersion() and 1 or MAX_BRIGHTNESS
     else
       current_brightness = dispersion_ui_brightnesses[i]
       
       if negative_dispersion() then
-        if current_brightness == 0 or current_brightness == 15 then
+        if current_brightness == 0 or current_brightness == MAX_BRIGHTNESS then
           new_brightness = 0
         else
           new_brightness = current_brightness + 1
@@ -1449,9 +1498,26 @@ end
 
 function key(n, z)
   key_states[n] = z
-  -- TODO: handle save_preset_mode and load_preset_mode
-  if meta_mode then
-    if z == 1 then
+  if save_preset_mode then
+    if n == 2 and z == 0 then
+      save_preset_mode = false
+    end
+    if n == 3 and z == 0 then
+      save_preset()
+      save_preset_mode = false
+      meta_mode = false
+    end
+  elseif load_preset_mode then
+    if n == 2 and z == 0 then
+      load_preset_mode = false
+    end
+    if n == 3 and z == 0 then
+      load_preset()
+      load_preset_mode = false
+      meta_mode = false
+    end
+  elseif meta_mode then
+    if z == 1 or n == 2 then
       return
     end
     
@@ -1464,9 +1530,11 @@ function key(n, z)
       clear_inactive_buoys()
       exit_meta_mode()
     elseif meta_mode_option == "save preset" then
-      enter_save_preset_select()
+      load_preview_data()
+      save_preset_mode = true
     elseif meta_mode_option == "load preset" then
-      enter_load_preset_select()
+      load_preview_data()
+      load_preset_mode = true
     elseif meta_mode_option == "exit" then
       exit_meta_mode()
     end
@@ -1487,13 +1555,90 @@ function key(n, z)
   end
 end
 
--- TODO: finish
-function enter_save_preset_select()
-  -- save_preset_mode = true
+function preset_filename()
+  return "preset_"..current_preset_selection.x.."_"..current_preset_selection.y..".txt"
 end
 
-function enter_load_preset_select()
-  -- load_preset_mode = true
+function save_autosave_preset()
+  pset_number = 144  -- 8 * 16 + 16
+  params:write(pset_number, "autosave")
+  
+  tab.save(save_data(), norns.state.data.."preset_16_8.txt")
+  existing_saved_presets[8][16] = true
+end
+
+function save_preset()
+  pset_number = current_preset_selection.y * 16 + current_preset_selection.x
+  params:write(pset_number, preset_name())
+
+  tab.save(save_data(), norns.state.data..preset_filename())
+  existing_saved_presets[current_preset_selection.y][current_preset_selection.x] = true
+end
+
+function save_data()
+  return {
+    buoys=buoys,
+    pilings=pilings,
+    tide_gap=tide_gap,
+    tide_advance_time=tide_advance_time,
+    external_clock_multiplier=external_clock_multiplier,
+    tide_shapes=tide_shapes,
+    num_tide_shapes_in_sequence=num_tide_shapes_in_sequence,
+    last_folder_loaded=last_folder_loaded,
+  }
+end
+
+function load_preset()
+  preset_exists = util.file_exists(norns.state.data..preset_filename())
+  if preset_exists then
+    load_data = tab.load(norns.state.data..preset_filename())
+    pset_number = current_preset_selection.y * 16 + current_preset_selection.x
+    params:read(pset_number)
+  end
+  
+  cps = current_preset_selection
+  init_all(false)
+  current_preset_selection = cps
+  
+  if not preset_exists then
+    return
+  end
+  
+  pilings = load_data.pilings
+  tide_gap = load_data.tide_gap
+  tide_advance_time = load_data.tide_advance_time
+  external_clock_multiplier = load_data.external_clock_multiplier
+  tide_shapes = load_data.tide_shapes
+  num_tide_shapes_in_sequence = load_data.num_tide_shapes_in_sequence
+  
+  if load_data.last_folder_loaded then
+    load_sound_folder(load_data.last_folder_loaded)
+  end
+
+  for x = 1, g.cols do
+    for y = 1, g.rows do
+      buoy_data = load_data.buoys[y][x]
+      if buoy_data then
+        buoys[y][x] = Buoy:new()
+        buoys[y][x].active = buoy_data.active
+        for k, v in pairs(buoy_data.options) do
+          -- sound index could change or go away if the folder is edited
+          if k == "sound" then
+            sound_index = 0
+            for i, detail in pairs(sample_details) do
+              if detail.name == buoy_data.sample_name then
+                sound_index = i
+                break
+              end
+            end
+            v = sound_index
+          end
+          
+          buoys[y][x]:update_option(k, v)
+        end
+      end
+    end
+  end
 end
 
 function exit_meta_mode()
@@ -1529,7 +1674,10 @@ function enc(n, d)
     return
   end
   
-  -- TODO: handle save_preset_mode and load_preset_mode
+  if selecting_preset() then
+    return
+  end
+  
   if meta_mode then
     if n == 2 then
       meta_mode_option_index = util.clamp(meta_mode_option_index + d, 1, #META_MODE_OPTIONS)
@@ -1619,9 +1767,17 @@ function smoothly_make_tides()
     if params:get("smoothing") == 2 or smoothing_counter == 0 then
       redraw_lights()
     end
+  else
+    if meta_mode then
+      redraw_lights()
+    end
   end
   
   redraw()
+end
+
+function selecting_preset()
+  return save_preset_mode or load_preset_mode
 end
 
 function reset_tides()
@@ -1739,11 +1895,17 @@ function disperse()
     
     for _, direction in pairs(POTENTIAL_DISPERSION_DIRECTIONS) do
       if not is_piling(x + direction.x, y + direction.y) then
-        density_diff = density - find_in_grid(x + direction.x, y + direction.y, particle_counts, density)
+        other_density = find_in_grid(x + direction.x, y + direction.y, particle_counts, density)
+        density_diff = density - other_density
         
+        -- TODO: what if instead we kept track of all the changes that were going to happen before we applied them,
+        -- so that we avoided the pointillism problem
         if negative_dispersion() then
           density_diff = -density_diff
-          if density_diff >= 1 and flip_coin(dispersion_factor(), density_diff) then
+          -- since particles above the max tide depth get thrown out, we wouldn't want to allow negative
+          -- dispersion towards those because it would lead to the waves simply disappearing
+          too_high = (other_density + particle.clump_size) > params:get("max_depth")
+          if density_diff >= 1 and (not too_high) and flip_coin(dispersion_factor(), density_diff) then
             table.insert(narrowed_dispersion_directions, direction)
           end
         else
@@ -1891,7 +2053,7 @@ end
 function tide_depths_to_lighting()
   for x = 1, g.cols do
     for y = 1, g.rows do
-      new_grid_lighting[y][x] = math.min(tide_depths[y][x] + params:get("min_bright"), 15)
+      new_grid_lighting[y][x] = math.min(tide_depths[y][x] + params:get("min_bright"), MAX_BRIGHTNESS)
     end
   end
 end
@@ -1914,6 +2076,10 @@ function remove_piling(x, y)
 end
 
 function find_in_grid(x, y, grid, default)
+  if not grid then
+    return default
+  end
+  
   if x < 1 or x > g.cols or y < 1 or y > g.rows then
     return default
   end
@@ -1944,7 +2110,7 @@ function redraw()
   screen.aa(1)
   screen.font_face(1)
   screen.font_size(8)
-  screen.level(15)
+  screen.level(MAX_BRIGHTNESS)
   
   if save_preset_mode then
     redraw_save_preset_mode_screen()
@@ -1967,19 +2133,61 @@ function redraw()
   screen.update()
 end
 
--- TODO: finish
+function draw_preset_select_background()
+  if util.file_exists(norns.state.data..preset_filename()) and preview_data then
+    -- draw flume edges
+    if preview_params:get("channel_style") == 2 then
+      redraw_flume_edges(1)
+    end
+    
+    -- draw buoys and pilings
+    for x = 1, g.cols do
+      for y = 1, g.rows do
+        buoy_data = preview_data.buoys[y][x]
+        if preview_data.pilings[y][x] == 1 then
+          screen.level(1)
+          draw_piling(x, y)
+        elseif buoy_data and buoy_data.active then
+          screen.level(2)
+          draw_buoy(x, y, false, 2)
+        end
+      end
+    end
+  end
+end
+
 function redraw_save_preset_mode_screen()
+  draw_preset_select_background()
+  screen.level(MAX_BRIGHTNESS)
   
+  screen.move(64, 25)
+  screen.text_center("save preset "..preset_name().."?")
+  screen.move(64, 35)
+  screen.text_center("K2 to cancel, K3 to confirm")
 end
 
 function redraw_load_preset_mode_screen()
+  draw_preset_select_background()
+  screen.level(MAX_BRIGHTNESS)
   
+  screen.move(64, 25)
+  screen.text_center("load preset "..preset_name().."?")
+  screen.move(64, 35)
+  screen.text_center("K2 to cancel, K3 to confirm")
+end
+
+function preset_name()
+  if current_preset_selection.x == 16 and current_preset_selection.y == 8 then
+    return "autosave"
+  end
+  
+  return string.char(string.byte("A") + current_preset_selection.y - 1)..current_preset_selection.x
 end
 
 function redraw_meta_mode_screen()
   for option_index, option in pairs(META_MODE_OPTIONS) do
     if option_index == meta_mode_option_index then
-      screen.level(15)
+      screen.level(MAX_BRIGHTNESS)
     else
       screen.level(5)
     end
@@ -2050,7 +2258,7 @@ function redraw_edit_buoy_screen()
 
   for option_index, option_config in pairs(buoy_options()) do
     if option_index == buoy_editing_option_scroll_index then
-      screen.level(15)
+      screen.level(MAX_BRIGHTNESS)
     else
       screen.level(5)
     end
@@ -2082,55 +2290,67 @@ function redraw_edit_buoy_screen()
 end
 
 function redraw_regular_screen()
-  redraw_flume_edges()
+  if params:get("channel_style") == 2 then
+    redraw_flume_edges()
+  end
   
-  screen.level(15)
+  screen.level(MAX_BRIGHTNESS)
   for x = 1, g.cols do
     for y = 1, g.rows do
       if is_piling(x, y) then
-        screen.circle(x * 8 - 4, y * 8 - 4, 3.4)
-        screen.fill()
+        draw_piling(x, y)
       elseif buoys[y][x] and buoys[y][x].active then
-        screen.rect(x * 8 - 7.1, y * 8 - 7.1, 6.4, 6.4)
-        screen.fill()
-        screen.level(0)
-        screen.rect(x * 8 - 5.9, y * 8 - 5.9, 4.0, 4.0)
-        screen.fill()
-
         -- we count not just currently playing but also very recently
-        -- played so that short samples will also appear in the display
-        level = buoys[y][x]:played_recently() and 15 or 5
-        screen.level(level)
-        screen.rect(x * 8 - 4.9, y * 8 - 4.9, 2.0, 2.0)
-        screen.fill()
-        
-        screen.level(15)
+        -- played so it will be clear that short samples have played
+        draw_buoy(x, y, buoys[y][x]:played_recently())
       end
     end
   end
 end
 
-function redraw_flume_edges()
-  if params:get("channel_style") == 2 then
-    screen.level(15)
-    screen.rect(0, 0, 128, 1)
-    screen.fill()
-    screen.rect(0, 63, 128, 1)
-    screen.fill()
-    screen.level(7)
-    screen.rect(0, 1, 128, 1)
-    screen.fill()
-    screen.rect(0, 62, 128, 1)
-    screen.fill()
-  end
+function draw_piling(x, y)
+  screen.circle(x * 8 - 4, y * 8 - 4, 3.4)
+  screen.fill()
+end
+
+function draw_buoy(x, y, lit_up, dim_brightness)
+  dim_brightness = dim_brightness or 5
+  screen.rect(x * 8 - 7.1, y * 8 - 7.1, 6.4, 6.4)
+  screen.fill()
+  screen.level(0)
+  screen.rect(x * 8 - 5.9, y * 8 - 5.9, 4.0, 4.0)
+  screen.fill()
+
+  level = lit_up and MAX_BRIGHTNESS or dim_brightness
+  screen.level(level)
+  screen.rect(x * 8 - 4.9, y * 8 - 4.9, 2.0, 2.0)
+  screen.fill()
+  
+  screen.level(MAX_BRIGHTNESS)
+end
+
+function redraw_flume_edges(brightness)
+  brightness = brightness or MAX_BRIGHTNESS
+  screen.level(brightness)
+  screen.rect(0, 0, 128, 1)
+  screen.fill()
+  screen.rect(0, 63, 128, 1)
+  screen.fill()
+  screen.level(util.round(brightness / 2))
+  screen.rect(0, 1, 128, 1)
+  screen.fill()
+  screen.rect(0, 62, 128, 1)
+  screen.fill()
 end
 
 function redraw_lights()
   if editing_tide_shapes() then
     was_editing_tides = true
-    redraw_grid_lights_tide_shape_editor()
+    redraw_grid_tide_shape_editor()
+  elseif selecting_preset() then
+    redraw_grid_preset_select_view()
   else
-    redraw_grid_lights_main_view()
+    redraw_grid_main_view()
   end
   
   redraw_arc_lights()
@@ -2144,8 +2364,8 @@ function redraw_arc_lights()
   -- tide height multiplier
   for i = 1, 32 do
     if (params:get("tide_height_multiplier") * 32) >= i then
-      a:led(1, i + 32 + orientation_offset, 15)
-      a:led(1, 33 - i + orientation_offset, 15)
+      a:led(1, i + 32 + orientation_offset, MAX_BRIGHTNESS)
+      a:led(1, 33 - i + orientation_offset, MAX_BRIGHTNESS)
     end
   end
   
@@ -2161,11 +2381,11 @@ function redraw_arc_lights()
   -- wave angle
   led_offset = util.round((params:get("angle") / 90) * 16) + 1
   a:led(3, led_offset - 1 + orientation_offset, 5)
-  a:led(3, led_offset + orientation_offset, 15)
+  a:led(3, led_offset + orientation_offset, MAX_BRIGHTNESS)
   a:led(3, led_offset + 1 + orientation_offset, 5)
 
   a:led(3, led_offset + 31 + orientation_offset, 5)
-  a:led(3, led_offset + 32 + orientation_offset, 15)
+  a:led(3, led_offset + 32 + orientation_offset, MAX_BRIGHTNESS)
   a:led(3, led_offset + 33 + orientation_offset, 5)
 
   -- dispersion
@@ -2203,19 +2423,22 @@ function phase_in_wrapped_range(target_index, low_index, high_index, wrap_point)
   return nil
 end
 
-function redraw_grid_lights_tide_shape_editor()
+function blink_brightness()
+  return util.round(math.abs(1 - util.time() % 2) * MAX_BRIGHTNESS)
+end
+
+function redraw_grid_tide_shape_editor()
   current_index = edited_shape_index()
   current_shape = tide_shapes[current_index]
 
   if insanity_mode then
-    reference_time = util.time() % 2
-    brightness = util.round(math.abs(1 - reference_time) * 15)
+    brightness = blink_brightness()
     for y = 1, g.rows do
       g:led(1, y, brightness)
     end
   elseif num_tide_shapes_in_sequence == 1 then
     for y = 1, g.rows do
-      brightness = y == current_index and 15 or 0
+      brightness = y == current_index and MAX_BRIGHTNESS or 0
       g:led(1, y, brightness)
       g:led(16, y, 0)
     end
@@ -2227,8 +2450,8 @@ function redraw_grid_lights_tide_shape_editor()
     for y = 1, g.rows do
       brightness_phase = phase_in_wrapped_range(y, first_in_sequence, last_in_sequence)
       if brightness_phase then
-        brightness = util.round(15 * (1 - reference_time + brightness_phase))
-        brightness = (brightness >= 0 and brightness <= 15) and brightness or 0
+        brightness = util.round(MAX_BRIGHTNESS * (1 - reference_time + brightness_phase))
+        brightness = (brightness >= 0 and brightness <= MAX_BRIGHTNESS) and brightness or 0
       else  
         brightness = 0
       end
@@ -2246,14 +2469,40 @@ function redraw_grid_lights_tide_shape_editor()
   g:refresh()
 end
 
-function redraw_grid_lights_main_view()
+function redraw_grid_preset_select_view()
   grid_lighting = grid_transition(smoothing_counter / smoothing_factor)
   
   for x = 1, g.cols do
     for y = 1, g.rows do
       brightness = is_piling(x, y) and 0 or grid_lighting[y][x]
       if displaying_buoys and buoys[y][x] and buoys[y][x].active then
-        brightness = 15
+        brightness = MAX_BRIGHTNESS
+      end
+      
+      -- normal grid activity is dimmed and in the background while preset
+      -- selection is occuring
+      brightness = util.round(brightness / 2)
+      
+      if current_preset_selection.x == x and current_preset_selection.y == y then
+        brightness = blink_brightness()
+      elseif existing_saved_presets[y][x] then
+        brightness = MAX_BRIGHTNESS
+      end
+      
+      g:led(x, y, brightness)
+    end
+  end
+  g:refresh()
+end
+
+function redraw_grid_main_view()
+  grid_lighting = grid_transition(smoothing_counter / smoothing_factor)
+  
+  for x = 1, g.cols do
+    for y = 1, g.rows do
+      brightness = is_piling(x, y) and 0 or grid_lighting[y][x]
+      if displaying_buoys and buoys[y][x] and buoys[y][x].active then
+        brightness = MAX_BRIGHTNESS
       end
       g:led(x, y, brightness)
     end
@@ -2668,8 +2917,9 @@ function Buoy:update_sound()
     return
   end
 
-  start_loc = details["start_location"]
-  end_loc = start_loc + details["duration"]
+  start_loc = details.start_location
+  end_loc = start_loc + details.duration
+  self.sample_name = details.name
   self.sample_start_time = start_loc
   self.sample_end_time = end_loc
   self:update_sound_loop_points()
@@ -2933,11 +3183,58 @@ function Buoy:effective_rate()
   return unmodulated_rate * new_rate_multiplier
 end
 
+-- if there's already a buoy, pressing a grid key switches between
+-- [buoy, piling, nothing], otherwise it just switches between
+-- [buoy, nothing] until a piling is explicitly placed there by
+-- a longpress
+function toggle_buoy_piling_nothing(x, y)
+  if buoys[y][x] then
+    if buoys[y][x].active then
+      buoys[y][x]:deactivate()
+      add_piling(x, y)
+    elseif is_piling(x, y) then
+      remove_piling(x, y)
+    else
+      buoys[y][x]:activate()
+    end
+  else
+    if is_piling(x, y) then
+      remove_piling(x, y)
+    else
+      add_piling(x, y)
+    end
+  end
+end
+
+function load_preview_data()
+  preview_data = tab.load(norns.state.data..preset_filename())
+  
+  preview_params = paramset.new()
+  add_channel_style_param(preview_params)
+  pset_number = current_preset_selection.y * 16 + current_preset_selection.x
+  preview_params:read(pset_number)
+end
+
 -- grid
 
 g.key = function(x, y, z)
-  -- TODO: handle save_preset_mode and load_preset_mode
+  if selecting_preset() and z == 1 then
+    current_preset_selection = { x=x, y=y }
+    
+    if util.file_exists(norns.state.data..preset_filename()) then
+      load_preview_data()
+    end
+    
+    return
+  end
+  
   if meta_mode then
+    -- TODO: make this work so as not to add buoys 
+    -- when first entering meta mode
+    -- if z == 0 then
+    --   toggle_buoy_piling_nothing(x, y)
+    -- end
+    
     return
   end
   
@@ -2979,26 +3276,7 @@ g.key = function(x, y, z)
       if buoys[y][x] and buoys[y][x].being_edited then
         buoys[y][x].being_edited = false
       else
-        -- if there's already a buoy, pressing a grid key switches between
-        -- [buoy, piling, nothing], otherwise it just switches between
-        -- [buoy, nothing] until a piling is explicitly placed there by
-        -- a longpress
-        if buoys[y][x] then
-          if buoys[y][x].active then
-            buoys[y][x]:deactivate()
-            add_piling(x, y)
-          elseif is_piling(x, y) then
-            remove_piling(x, y)
-          else
-            buoys[y][x]:activate()
-          end
-        else
-          if is_piling(x, y) then
-            remove_piling(x, y)
-          else
-            add_piling(x, y)
-          end
-        end
+        toggle_buoy_piling_nothing(x, y)
       end
     end
   end
