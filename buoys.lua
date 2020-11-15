@@ -45,7 +45,7 @@
 -- ring 3 = tide angle
 -- ring 4 = dispersion
 --
--- @lylem v1.1.0
+-- @lylem v1.1.1
 
 -- IDEAS FOR LATER VERSIONS
 -- 1. negative rates
@@ -59,6 +59,9 @@
 -- 9. MYSTERY E1 FEATURE???
 -- 10. more realistic behavior when tides exceed max tide depth, e.g.
 --     when a bunch of them get stuck up against a wall
+
+-- TECH DEBT
+-- 1. finished logic could be better (buoy.playing vs buoy.finished_playing(), etc)
 
 -- ACKNOWLEDGEMENTS
 -- Thanks John Sloan for feedback on the concept and the interface
@@ -100,7 +103,8 @@ local AUTOSAVE_METRO_TIME = 60
 local POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
 local META_MODE_KEYS = { { x=1, y=1 }, { x=1, y=8 }, { x=16, y=1 }, { x=16, y=8 } }
 local META_MODE_OPTIONS = { "choose sample folder", "clear inactive buoys", "save preset", "load preset", "exit" }
-local CROW_INPUT_OPTIONS = { "none", "clock", "run", "start/stop", "reset", "cv tide height", "cv tide shape", "cv tide angle", "cv dispersion" }
+local CROW_INPUT_OPTIONS = { "none", "clock", "run", "start/stop", "reset",
+                             "cv tide height", "cv tide shape", "cv tide angle", "cv dispersion" }
 
 local NUM_MIDI_CLOCKS_PER_CHECK = 24
 local NUM_CROW_CLOCKS_PER_CHECK = 8
@@ -189,6 +193,7 @@ local ALL_BUOY_OPTIONS = {
     option_range = {0, 0},
     option_step_value = 1,
     formatter = sound_option_formatter,
+    sound_only = true,
   }, 
   {
     name = "sound start point %",
@@ -196,6 +201,7 @@ local ALL_BUOY_OPTIONS = {
     option_range = {0.0, "sound end point %"},
     option_step_value = 0.04,
     extended_only = true,
+    sound_only = true,
   },
   {
     name = "sound end point %",
@@ -203,16 +209,19 @@ local ALL_BUOY_OPTIONS = {
     option_range = {"sound start point %", 100.0},
     option_step_value = 0.04,
     extended_only = true,
+    sound_only = true,
   },
   {
     name = "looping",
     default_value = 1,
     options = {"no", "yes"},
+    sound_only = true,
   }, 
   {
     name = "uninterruptible",
     default_value = 1,
     options = {"no", "yes"},
+    sound_only = true,
   },
   {
     name = "octave offset",
@@ -220,6 +229,7 @@ local ALL_BUOY_OPTIONS = {
     option_range = {-2, 2},
     option_step_value = 1,
     formatter = offset_formatter,
+    sound_only = true,
   }, 
   {
     name = "semitone offset",
@@ -227,6 +237,7 @@ local ALL_BUOY_OPTIONS = {
     option_range = {-7, 7},
     option_step_value = 1,
     formatter = offset_formatter,
+    sound_only = true,
   }, 
   {
     name = "cent offset",
@@ -234,14 +245,16 @@ local ALL_BUOY_OPTIONS = {
     option_range = {-50, 50},
     option_step_value = 1,
     formatter = offset_formatter,
+    sound_only = true,
   },
-  { name = "OPTION_SPACER" },
+  { name = "OPTION_SPACER", sound_only = true },
   {
     name = "play threshold",
     default_value = 1,
     option_range = {0, 14},
     option_step_value = 1,
     formatter = zero_is_none_formatter,
+    sound_only = true,
   },
   {
     name = "play threshold hysteresis",
@@ -249,6 +262,7 @@ local ALL_BUOY_OPTIONS = {
     option_range = {1, 14},
     option_step_value = 1,
     extended_only = true,
+    sound_only = true,
   },
   {
     name = "reset threshold",
@@ -256,6 +270,7 @@ local ALL_BUOY_OPTIONS = {
     option_range = {0, 14},
     option_step_value = 1,
     formatter = zero_is_none_formatter,
+    sound_only = true,
   },
   {
     name = "reset threshold hysteresis",
@@ -263,19 +278,22 @@ local ALL_BUOY_OPTIONS = {
     option_range = {1, 14},
     option_step_value = 1,
     extended_only = true,
+    sound_only = true,
   },
-  { name = "OPTION_SPACER" },
+  { name = "OPTION_SPACER", sound_only = true },
   {
     name = "zenith volume",
     default_value = 1.0,
     option_range = {0.0, 1.0},
     option_step_value = 0.01,
+    sound_only = true,
   },
   {
     name = "nadir volume",
-    default_value = 0.0,
+    default_value = 1.0,
     option_range = {0.0, 1.0},
     option_step_value = 0.01,
+    sound_only = true,
   },
   {
     name = "volume slew",
@@ -284,6 +302,7 @@ local ALL_BUOY_OPTIONS = {
     option_step_value = 0.01,
     formatter = negative_is_auto_formatter,
     extended_only = true,
+    sound_only = true,
   },
   {
     name = "volume zenith point",
@@ -291,6 +310,7 @@ local ALL_BUOY_OPTIONS = {
     option_range = {"volume nadir point", 14},
     option_step_value = 1,
     extended_only = true,
+    sound_only = true,
   },
   {
     name = "volume nadir point",
@@ -298,14 +318,16 @@ local ALL_BUOY_OPTIONS = {
     option_range = {0, "volume zenith point"},
     option_step_value = 1,
     extended_only = true,
+    sound_only = true,
   },
-  { name = "OPTION_SPACER", extended_only = true },
+  { name = "OPTION_SPACER", extended_only = true, sound_only = true },
   {
     name = "zenith pan",
     default_value = 0.0,
     option_range = {-1.0, 1.0},
     option_step_value = 0.01,
     formatter = panning_formatter,
+    sound_only = true,
   },
   {
     name = "nadir pan",
@@ -313,6 +335,7 @@ local ALL_BUOY_OPTIONS = {
     option_range = {-1.0, 1.0},
     option_step_value = 0.01,
     formatter = panning_formatter,
+    sound_only = true,
   },
   {
     name = "pan slew",
@@ -321,6 +344,7 @@ local ALL_BUOY_OPTIONS = {
     option_step_value = 0.01,
     formatter = negative_is_auto_formatter,
     extended_only = true,
+    sound_only = true,
   },
   {
     name = "pan zenith point",
@@ -328,6 +352,7 @@ local ALL_BUOY_OPTIONS = {
     option_range = {"pan nadir point", 14},
     option_step_value = 1,
     extended_only = true,
+    sound_only = true,
   },
   {
     name = "pan nadir point",
@@ -335,12 +360,14 @@ local ALL_BUOY_OPTIONS = {
     option_range = {0, "pan zenith point"},
     option_step_value = 1,
     extended_only = true,
+    sound_only = true,
   },
-  { name = "OPTION_SPACER", extended_only = true },
+  { name = "OPTION_SPACER", extended_only = true, sound_only = true },
   {
     name = "filter type",
     default_value = 1,
     options = {"low pass", "high pass", "band pass", "band reject"},
+    sound_only = true,
   },
   {
     name = "zenith filter cutoff",
@@ -348,6 +375,7 @@ local ALL_BUOY_OPTIONS = {
     option_range = {0, 100},
     option_step_value = 0.05,
     formatter = frequency_formatter,
+    sound_only = true,
   },
   {
     name = "nadir filter cutoff",
@@ -355,6 +383,7 @@ local ALL_BUOY_OPTIONS = {
     option_range = {0, 100},
     option_step_value = 0.05,
     formatter = frequency_formatter,
+    sound_only = true,
   },
   {
     name = "cutoff zenith point",
@@ -362,6 +391,7 @@ local ALL_BUOY_OPTIONS = {
     option_range = {"cutoff nadir point", 14},
     option_step_value = 1,
     extended_only = true,
+    sound_only = true,
   },
   {
     name = "cutoff nadir point",
@@ -369,19 +399,22 @@ local ALL_BUOY_OPTIONS = {
     option_range = {0, "cutoff zenith point"},
     option_step_value = 1,
     extended_only = true,
+    sound_only = true,
   },
-  { name = "OPTION_SPACER", extended_only = true },
+  { name = "OPTION_SPACER", extended_only = true, sound_only = true },
   {
     name = "zenith filter Q",
     default_value = 0,
     option_range = {0, 100},
     option_step_value = 1,
+    sound_only = true,
   },
   {
     name = "nadir filter Q",
     default_value = 0,
     option_range = {0, 100},
     option_step_value = 1,
+    sound_only = true,
   },
   {
     name = "Q zenith point",
@@ -389,6 +422,7 @@ local ALL_BUOY_OPTIONS = {
     option_range = {"Q nadir point", 14},
     option_step_value = 1,
     extended_only = true,
+    sound_only = true,
   },
   {
     name = "Q nadir point",
@@ -396,19 +430,22 @@ local ALL_BUOY_OPTIONS = {
     option_range = {0, "Q zenith point"},
     option_step_value = 1,
     extended_only = true,
+    sound_only = true,
   },
-  { name = "OPTION_SPACER", extended_only = true },
+  { name = "OPTION_SPACER", extended_only = true, sound_only = true },
   {
     name = "zenith rate",
     default_value = 1.0,
     option_range = {0.01, 4.0},
     option_step_value = 0.01,
+    sound_only = true,
   },
   {
     name = "nadir rate",
     default_value = 1.0,
     option_range = {0.01, 4.0},
     option_step_value = 0.01,
+    sound_only = true,
   },
   {
     name = "rate slew",
@@ -419,6 +456,7 @@ local ALL_BUOY_OPTIONS = {
     option_step_value = 0.01,
     formatter = negative_is_auto_formatter,
     extended_only = true,
+    sound_only = true,
   },
   {
     name = "rate zenith point",
@@ -426,6 +464,7 @@ local ALL_BUOY_OPTIONS = {
     option_range = {"rate nadir point", 14},
     option_step_value = 1,
     extended_only = true,
+    sound_only = true,
   },
   {
     name = "rate nadir point",
@@ -433,38 +472,44 @@ local ALL_BUOY_OPTIONS = {
     option_range = {0, "rate zenith point"},
     option_step_value = 1,
     extended_only = true,
+    sound_only = true,
   },
-  { name = "OPTION_SPACER" },
+  { name = "OPTION_SPACER", midi_only = true },
   {
     name = "midi output",
     default_value = 0,
     option_range = {0, 4},
     option_step_value = 1,
     formatter = midi_output_formatter,
+    midi_only = true,
   },
   {
     name = "midi out channel",
     default_value = 1,
     option_range = {1, 16},
     option_step_value = 1,
+    midi_only = true,
   },
   {
     name = "midi out CC number",
     default_value = 1,
     option_range = {0, 127},
     option_step_value = 1,
+    midi_only = true,
   },
   {
     name = "zenith CC value",
     default_value = 0,
     option_range = {0, 127},
     option_step_value = 1,
+    midi_only = true,
   },
   {
     name = "nadir CC value",
     default_value = 0,
     option_range = {0, 127},
     option_step_value = 1,
+    midi_only = true,
   },
   {
     name = "midi CC zenith point",
@@ -472,6 +517,7 @@ local ALL_BUOY_OPTIONS = {
     option_range = {"midi CC nadir point", 14},
     option_step_value = 1,
     extended_only = true,
+    midi_only = true,
   },
   {
     name = "midi CC nadir point",
@@ -479,6 +525,7 @@ local ALL_BUOY_OPTIONS = {
     option_range = {0, "midi CC zenith point"},
     option_step_value = 1,
     extended_only = true,
+    midi_only = true,
   },
   { name = "OPTION_SPACER", crow_only = true },
   {
@@ -629,6 +676,8 @@ end
 
 function buoy_options()
   show_extended_params = params:get("extended_buoy_params") == 2
+  show_sound_params = params:get("sound_buoy_params") == 2
+  show_midi_params = params:get("midi_buoy_params") == 2
   show_crow_params = crow.connected()
   
   result = {}
@@ -640,6 +689,14 @@ function buoy_options()
       include_option = include_option and show_extended_params
     end
     
+    if all_buoy_options[i].sound_only then
+      include_option = include_option and show_sound_params
+    end
+
+    if all_buoy_options[i].midi_only then
+      include_option = include_option and show_midi_params
+    end
+
     if all_buoy_options[i].crow_only then
       include_option = include_option and show_crow_params
     end
@@ -676,7 +733,6 @@ function init_all(full)
   run = true
   displaying_buoys = false
   advance_time_dirty = false
-  buoy_editing_option_scroll_index = 1
   num_tide_shapes_in_sequence = 1
   tide_shapes = BASE_TIDE_SHAPES
   tide_gap = TIDE_GAP
@@ -684,6 +740,7 @@ function init_all(full)
   smoothing_factor = SMOOTHING_FACTOR
   current_tide_delta = tide_advance_time / smoothing_factor
   all_buoy_options = ALL_BUOY_OPTIONS
+  buoy_editing_option_scroll_index = first_buoy_option_index()
 
   old_grid_lighting = fresh_grid(params:get("min_bright"))
   new_grid_lighting = fresh_grid(params:get("min_bright"))
@@ -782,6 +839,10 @@ function update_dispersion_param()
   if params:get("dispersion") ~= new_dispersion then
     params:set("dispersion", new_dispersion)
   end
+end
+
+function buoy_params_changed_action(_val)
+  buoy_editing_option_scroll_index = first_buoy_option_index()
 end
 
 function dispersion_updated_action(dispersion)
@@ -899,10 +960,15 @@ function add_channel_style_param(pset)
 end
 
 function init_params()
-  params:add_group("BUOYS", 17)
+  params:add_group("BUOYS", 19)
   
   add_channel_style_param(params)
-  params:add{ type = "option", id = "extended_buoy_params", name = "extended buoy params", options = { "off", "on" } }
+  params:add{ type = "option", id = "extended_buoy_params", name = "extended buoy params", options = { "off", "on" },
+              action = buoy_params_changed_action }
+  params:add{ type = "option", id = "sound_buoy_params", name = "sound buoy params", options = { "off", "on" },
+              default = 2, action = buoy_params_changed_action }
+  params:add{ type = "option", id = "midi_buoy_params", name = "midi buoy params", options = { "off", "on" },
+              default = 2, action = buoy_params_changed_action }
   params:add{ type = "option", id = "smoothing", name = "visual smoothing", options = { "off", "on" }, default = 2 }
   params:add{ type = "option", id = "pausing", name = "tides paused", options = { "pause buoys", "continue" } }
   params:add{ type = "option", id = "unpausing", name = "tides unpaused", options = { "resume", "reset buoys" } }
@@ -1668,6 +1734,15 @@ function process_reverb_enc(d)
   end
 end
 
+function first_buoy_option_index()
+  first_option = buoy_options()[1]
+  if first_option and (first_option.name == "OPTION_SPACER") then
+    return 2
+  end
+
+  return 1
+end
+
 function enc(n, d)
   if n == 1 then
     process_reverb_enc(d)
@@ -1684,7 +1759,7 @@ function enc(n, d)
     end
   elseif editing_buoys() then
     if n == 2 then
-      buoy_editing_option_scroll_index = util.clamp(buoy_editing_option_scroll_index + d, 1, #buoy_options())
+      buoy_editing_option_scroll_index = util.clamp(buoy_editing_option_scroll_index + d, first_buoy_option_index(), #buoy_options())
     end
     
     if n == 3 then
@@ -1715,7 +1790,7 @@ end
 
 function edit_buoys(d)
   option_config = buoy_options()[buoy_editing_option_scroll_index]
-  if option_config.name == "OPTION_SPACER" then
+  if (not option_config) or (option_config.name == "OPTION_SPACER") then
     return
   end
   
@@ -2654,7 +2729,7 @@ end
 
 function Buoy:start_playing()
   if self:has_softcut_buffer() then
-    if self:finished_playing() then
+    if (not self.playing) or self:finished_playing() then
       self:reset_playhead()
     end
     
