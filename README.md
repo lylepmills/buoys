@@ -6,6 +6,8 @@ READ THIS FIRST: If you're just trying to get started with buoys, make sure to l
 
 Discussion at https://llllllll.co/t/buoys/37639.
 
+Video walkthroughts at https://vimeo.com/showcase/7782830.
+
 ## Concept
 
 A tide of light moves across the grid, activating sounds and modulations as the tide interacts with any number of "buoys" that have been placed anywhere in its path. The core physical metaphor is that of a wave/tide of water moving through space and having interactions with objects in the water along the way. Besides buoys, pilings are the other type of object that can be placed in the water. Unlike buoys, pilings do not yield to the tide, the tide yields to them. The tide will be disrupted by pilings it runs into as it moves along. On the grid, brighter lights correspond to deeper "waters".
