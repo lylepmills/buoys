@@ -58,6 +58,8 @@ The experience of using an arc definitely enhances buoys, however all the parame
 
 **extended buoy params** - if on, you'll see more detailed options when editing buoys, such as setting zenith and nadir points.
 
+**midi buoy params** - if on, you'll see options for midi outputs when editing buoys.
+
 **smoothing** - if on, the grid lighting will smoothly morph between one state and the next, giving a more natural appearance. If off, you will see a more honest representation of the app state in terms of the current tide depths that buoys will be responding to.
 
 **pausing** - pause buoys vs continue. If set to pause buoys, playback of any sounds associated with buoys will pause immediately when the tides pause. If set to continue, they will not - non-looping buoys will play to their end point, and looping buoys will continue looping indefinitely.
@@ -84,7 +86,7 @@ The experience of using an arc definitely enhances buoys, however all the parame
 **arc orientation** - if set to horizontal, the LED animations that accompany the four arc encoders will be oriented for horizontal use, ditto for vertical.
 
 ### Buoy parameters
-Note you'll only see crow parameters if you have a crow attached to the norns.
+Note you'll only see sound parameters if you've loaded some sounds into the app (see "choose sample folder" in meta mode). And you'll only see crow parameters if you have a crow attached to the norns. Midi params can be toggled on or off in the global app parameters. In this way, the app tries to whittle down the buoy params displayed down to just the ones most useful for however you're currently using the app.
 
 **sound** - the sample file you'll be working with, if any.
 
@@ -98,7 +100,7 @@ Note you'll only see crow parameters if you have a crow attached to the norns.
 
 **reset threshold** - the tide depth which, when reached, will reset playback of the sound to it's start point.
 
-**zenith/nadir volume, pan, filter cutoff, filter Q, rate, midi CC, crow voltage** - throughout, zenith and nadir refer to the high and low points of the tide. By default these are 14 and 0 respectively. By setting different parameter values for the zenith and nadir you make it such that the given parameter will be modulated by the tide depth. The value of the parameter need not be higher for the zenith than the nadir, it also works the other way around.
+**zenith/nadir volume, pan, filter cutoff, filter Q, rate, midi CC, midi velocity, crow voltage** - throughout, zenith and nadir refer to the high and low points of the tide. By default these are 14 and 0 respectively. By setting different parameter values for the zenith and nadir you make it such that the given parameter will be modulated by the tide depth. The value of the parameter need not be higher for the zenith than the nadir, it also works the other way around.
 
 ### Extended buoy parameters
 If extended params are enabled in the main app parameters, you'll see some extras that will give you even more control.
@@ -127,7 +129,7 @@ buoys integrates with both crow and midi inputs and outputs. For crow, buoys has
 
 buoys has its own hand-rolled approach to clocking (for both crow and midi) which emphasizes getting the tide advancement to happen strictly on the beat. This works best when the external clock is constant; buoys is not especially good at handling clock rates that are changing over time, so if clock rate changes expect some short-term jumpiness in the appearance of the tide advancement.
 
-In terms of outputs, buoys currently supports three output types for crow and only one for midi. For crow, you can output either a variable voltage, a trigger, or a gate. The voltage corresponds to tide depth similar to modulation of the sound parameters, and can be unipolar or bipolar depending on the settings for the zenith/nadir voltages. The trigger/gate go high or low based on crossing a certain threshold for tide depth. For midi, the only output type (currently) is midi CC messages.
+In terms of outputs, buoys currently supports three output types for crow and three for midi. For crow, you can output either a variable voltage, a trigger, or a gate. The voltage corresponds to tide depth similar to modulation of the sound parameters, and can be unipolar or bipolar depending on the settings for the zenith/nadir voltages. The trigger/gate go high or low based on crossing a certain threshold for tide depth. For midi, you can output midi notes (note on/note off based on crossing a threshold), velocity, and CC messages.
 
 ## Tips and Tricks
 The app autosaves what you've been working on once a minute. This autosave data lives in the bottom right slot of the grid when loading presets. When you load up the app for the first time or load a new preset, it won't autosave for at least a minute at first, to give you time to load the previous autosave if you want.
