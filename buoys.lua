@@ -45,7 +45,7 @@
 -- ring 3 = tide angle
 -- ring 4 = dispersion
 --
--- @lylem v1.1.1
+-- @lylem v1.2.0
 
 -- IDEAS FOR LATER VERSIONS
 -- 1. negative rates
@@ -59,6 +59,8 @@
 -- 9. MYSTERY E1 FEATURE???
 -- 10. more realistic behavior when tides exceed max tide depth, e.g.
 --     when a bunch of them get stuck up against a wall
+-- 11. make midi notes modulatable by tides within a scale
+--     (pseudo-arpeggiation)
 
 -- TECH DEBT
 -- 1. finished logic could be better (buoy.playing vs buoy.finished_playing(), etc)
@@ -105,6 +107,9 @@ local META_MODE_KEYS = { { x=1, y=1 }, { x=1, y=8 }, { x=16, y=1 }, { x=16, y=8 
 local META_MODE_OPTIONS = { "choose sample folder", "clear inactive buoys", "save preset", "load preset", "exit" }
 local CROW_INPUT_OPTIONS = { "none", "clock", "run", "start/stop", "reset",
                              "cv tide height", "cv tide shape", "cv tide angle", "cv dispersion" }
+local NOTES = { 'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B' }
+local MIN_MIDI_NOTE = 21
+local MAX_MIDI_NOTE = 108
 
 local NUM_MIDI_CLOCKS_PER_CHECK = 24
 local NUM_CROW_CLOCKS_PER_CHECK = 8
@@ -164,6 +169,17 @@ function midi_output_formatter(value)
   end
   
   return tostring(value)
+end
+
+function midi_note_formatter(value)
+  if value == MIN_MIDI_NOTE - 1 then
+    return "none"
+  end
+
+  octave_num = math.floor((value - 12) / 12)
+  note = NOTES[modulo_base_one(value + 1, #NOTES)]
+
+  return note..octave_num
 end
 
 function zero_is_none_formatter(value)
@@ -490,11 +506,60 @@ local ALL_BUOY_OPTIONS = {
     option_step_value = 1,
     midi_only = true,
   },
+  { name = "OPTION_SPACER", extended_only = true, midi_only = true },
   {
-    name = "midi out CC number",
+    name = "midi note out",
+    default_value = MIN_MIDI_NOTE - 1,
+    option_range = {MIN_MIDI_NOTE - 1, MAX_MIDI_NOTE},
+    option_step_value = 1,
+    formatter = midi_note_formatter,
+    midi_only = true,
+  },
+  {
+    name = "midi note on threshold",
     default_value = 1,
+    option_range = {0, 14},
+    option_step_value = 1,
+    formatter = zero_is_none_formatter,
+    midi_only = true,
+  },
+  {
+    name = "zenith velocity value",
+    default_value = 127,
     option_range = {0, 127},
     option_step_value = 1,
+    midi_only = true,
+  },
+  {
+    name = "nadir velocity value",
+    default_value = 127,
+    option_range = {0, 127},
+    option_step_value = 1,
+    midi_only = true,
+  },
+  {
+    name = "midi velocity zenith point",
+    default_value = 14,
+    option_range = {"midi velocity nadir point", 14},
+    option_step_value = 1,
+    extended_only = true,
+    midi_only = true,
+  },
+  {
+    name = "midi velocity nadir point",
+    default_value = 0,
+    option_range = {0, "midi velocity zenith point"},
+    option_step_value = 1,
+    extended_only = true,
+    midi_only = true,
+  },
+  { name = "OPTION_SPACER", extended_only = true, midi_only = true },
+  {
+    name = "midi out CC number",
+    default_value = 0,
+    option_range = {0, 127},
+    option_step_value = 1,
+    formatter = zero_is_none_formatter,
     midi_only = true,
   },
   {
@@ -583,7 +648,7 @@ local ALL_BUOY_OPTIONS = {
   },
   {
     name = "crow t/g threshold",
-    default_value = 8,
+    default_value = 1,
     option_range = {0, 14},
     option_step_value = 1,
     formatter = zero_is_none_formatter,
@@ -674,9 +739,13 @@ function update_sound_options()
   all_buoy_options[1].option_range = {0, #sample_details}
 end
 
+function any_sounds_loaded()
+  return #sample_details > 0
+end
+
 function buoy_options()
   show_extended_params = params:get("extended_buoy_params") == 2
-  show_sound_params = params:get("sound_buoy_params") == 2
+  show_sound_params = any_sounds_loaded()
   show_midi_params = params:get("midi_buoy_params") == 2
   show_crow_params = crow.connected()
   
@@ -714,6 +783,7 @@ g = grid.connect()
 
 function init()
   init_all(true)
+
 end
 
 function init_all(full)
@@ -740,6 +810,7 @@ function init_all(full)
   smoothing_factor = SMOOTHING_FACTOR
   current_tide_delta = tide_advance_time / smoothing_factor
   all_buoy_options = ALL_BUOY_OPTIONS
+  sample_details = {}
   buoy_editing_option_scroll_index = first_buoy_option_index()
 
   old_grid_lighting = fresh_grid(params:get("min_bright"))
@@ -762,7 +833,6 @@ function init_all(full)
   crow_known_to_be_connected = crow.connected()
   external_clock_multiplier = 1
   dispersion_ui_brightnesses = {}
-  sample_details = {}
   
   for i = 1, 64 do
     dispersion_ui_brightnesses[i] = 0
@@ -960,13 +1030,11 @@ function add_channel_style_param(pset)
 end
 
 function init_params()
-  params:add_group("BUOYS", 19)
+  params:add_group("BUOYS", 18)
   
   add_channel_style_param(params)
   params:add{ type = "option", id = "extended_buoy_params", name = "extended buoy params", options = { "off", "on" },
               action = buoy_params_changed_action }
-  params:add{ type = "option", id = "sound_buoy_params", name = "sound buoy params", options = { "off", "on" },
-              default = 2, action = buoy_params_changed_action }
   params:add{ type = "option", id = "midi_buoy_params", name = "midi buoy params", options = { "off", "on" },
               default = 2, action = buoy_params_changed_action }
   params:add{ type = "option", id = "smoothing", name = "visual smoothing", options = { "off", "on" }, default = 2 }
@@ -1389,7 +1457,7 @@ end
 function mark_buoy_being_edited(x, y)
   if not buoys[y][x] then
     buoys[y][x] = Buoy:new()
-    
+
     -- if newly creating a buoy, and there is another buoy also being edited which
     -- serves as the prototype (i.e. its key was pressed first), copy the attributes
     -- of the original to this new buoy
@@ -2375,9 +2443,7 @@ function redraw_regular_screen()
       if is_piling(x, y) then
         draw_piling(x, y)
       elseif buoys[y][x] and buoys[y][x].active then
-        -- we count not just currently playing but also very recently
-        -- played so it will be clear that short samples have played
-        draw_buoy(x, y, buoys[y][x]:played_recently())
+        draw_buoy(x, y, buoys[y][x]:light_up())
       end
     end
   end
@@ -2642,12 +2708,16 @@ Buoy = {
   depth = 0,
   softcut_buffer = -1,
   active_start_time = -1,
+  midi_or_crow_triggered_time = -1,
   play_triggerable = true,
   reset_triggerable = true,
   sample_start_time = -1,
   sample_end_time = -1,
   loop_start_time = -1,
   loop_end_time = -1,
+  last_midi_note_played_channel = nil,
+  midi_note = nil,
+  crow_high = false,
 }
 
 function Buoy:new(o)
@@ -2699,7 +2769,7 @@ function Buoy:update_depth(new_depth)
   self:update_filtering()
   self:update_rate()
   self:update_crow()
-  self:update_midi_cc_output()
+  self:update_midi()
   
   if self.play_triggerable and self:newly_exceeds_play_threshold() then
     self.play_triggerable = false
@@ -2850,6 +2920,20 @@ function Buoy:currently_playing()
   return self.playing and not self:finished_playing()
 end
 
+function Buoy:light_up()
+  -- we count not just currently playing/triggered but also very recently
+  -- played/triggered so it will be clear that short samples/triggers have played
+  return self:played_recently() or self:midi_or_crow_triggered_recently()
+end
+
+function Buoy:midi_or_crow_triggered_recently()
+  if self.midi_note or self.crow_high then
+    return true
+  end
+
+  return (util.time() - self.midi_or_crow_triggered_time) < 0.1
+end
+
 function Buoy:played_recently()
   if self:currently_playing() then
     return true
@@ -2962,8 +3046,38 @@ function Buoy:update_option(name, value)
   end
 end
 
+function Buoy:update_midi()
+  self:update_midi_cc_output()
+  self:update_midi_note_output()
+end
+
+function Buoy:update_midi_note_output()
+  if (not self.midi_out_device) or (self.options["midi note out"] == MIN_MIDI_NOTE - 1) then
+    return
+  end
+
+  depth_meets_note_on_threshold = self.depth >= self.options["midi note on threshold"]
+
+  if self.midi_note and (not depth_meets_note_on_threshold) then
+    self.midi_out_device:note_off(self.midi_note, 0, self.last_midi_note_played_channel)
+    self.midi_note = nil
+    self.last_midi_note_played_channel = nil
+  elseif (not self.midi_note) and depth_meets_note_on_threshold then
+    self.midi_or_crow_triggered_time = util.time()
+
+    nvv = self.options["nadir velocity value"]
+    zvv = self.options["zenith velocity value"]
+    velocity = util.round(nvv + ((zvv - nvv) * self:tide_ratio("midi velocity")))
+
+    midi_channel = self.options["midi out channel"]
+    self.midi_note = self.options["midi note out"]
+    self.last_midi_note_played_channel = midi_channel
+    self.midi_out_device:note_on(self.midi_note, velocity, midi_channel)
+  end
+end
+
 function Buoy:update_midi_cc_output()
-  if not self.midi_out_device then
+  if (not self.midi_out_device) or (self.options["midi out CC number"] == 0) then
     return
   end
   
@@ -3062,6 +3176,7 @@ function Buoy:update_crow_trigger()
   end
   
   if (self.previous_depth < trigger_threshold) and (self.depth >= trigger_threshold) then
+    self.midi_or_crow_triggered_time = util.time()
     crow.output[output_index].action = "pulse(0.05, 8.0)"
     crow.output[output_index]()
   end
@@ -3074,7 +3189,15 @@ function Buoy:update_crow_gate()
     return
   end
   
-  new_voltage = (self.depth >= gate_threshold) and 8 or 0
+  if (self.depth >= gate_threshold) then
+    self.midi_or_crow_triggered_time = util.time()
+    self.crow_high = true
+    new_voltage = 8
+  else
+    self.crow_high = false
+    new_voltage = 0
+  end
+
   crow.output[output_index].slew = 0
   crow.output[output_index].volts = new_voltage
 end
