@@ -747,7 +747,7 @@ function buoy_options()
   show_extended_params = params:get("extended_buoy_params") == 2
   show_sound_params = any_sounds_loaded()
   show_midi_params = params:get("midi_buoy_params") == 2
-  show_crow_params = crow.connected()
+  show_crow_params = norns.crow.connected()
   
   result = {}
 
@@ -830,7 +830,7 @@ function init_all(full)
   meta_mode_option_index = 1
   file_select_active = false
   insanity_mode = false
-  crow_known_to_be_connected = crow.connected()
+  crow_known_to_be_connected = norns.crow.connected()
   external_clock_multiplier = 1
   dispersion_ui_brightnesses = {}
   
@@ -1427,8 +1427,8 @@ function background_metro_tasks()
   -- if a crow has just recently been connected, we need to manually set its
   -- callbacks. if it has just been disconnected, we should reset our timers
   -- and counters.
-  if crow_known_to_be_connected ~= crow.connected() then
-    crow_known_to_be_connected = crow.connected()
+  if crow_known_to_be_connected ~= norns.crow.connected() then
+    crow_known_to_be_connected = norns.crow.connected()
     init_crow()
   end
   
