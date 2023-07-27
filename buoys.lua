@@ -2652,16 +2652,14 @@ function redraw_grid_main_view()
 end
 
 function fresh_grid(b)
-  return {
-    {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
-    {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
-    {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
-    {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
-    {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
-    {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
-    {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
-    {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
-  }
+  local gr = {}
+  for i = 1, g.rows do
+    gr[i] = {}
+    for j = 1, g.cols do
+      gr[i][j] = b
+    end
+  end
+  return gr
 end
 
 -- probability a fair coin flip is heads
