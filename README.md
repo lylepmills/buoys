@@ -40,7 +40,7 @@ Each buoy can be associated with a sound. As the buoy gets lifted up and down by
 
 **Short press** any grid key to toggle whats there - buoy vs piling vs nothing. If a buoy has never been edited on that key, then you'll just be toggling between piling and nothing.
 
-**Press all four keys on the corners** to get to meta mode. This is where you can do more setup type things that you probably don't want to use while performing but will need to do from time to time, like load a folder of samples.
+**Press all four keys on the corners of a 128** to get to meta mode. On Zero/256 the keys are the same as on a One/128. This is where you can do more setup type things that you probably don't want to use while performing but will need to do from time to time, like load a folder of samples.
 
 ### Arc
 The experience of using an arc definitely enhances buoys, however all the parameters you can access using arc can also be accessed in the parameters page and/or be mapped to an external midi controller (ideally one with knobs/encoders), so if you don't have one you are still gonna be just fine. The lighting displays on the arc are designed for horizontal use by default but can be switched to vertical by an option on the parameters page.
