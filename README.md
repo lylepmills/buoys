@@ -12,9 +12,9 @@ Video walkthroughts at https://vimeo.com/showcase/7782830.
 
 A tide of light moves across the grid, activating sounds and modulations as the tide interacts with any number of "buoys" that have been placed anywhere in its path. The core physical metaphor is that of a wave/tide of water moving through space and having interactions with objects in the water along the way. Besides buoys, pilings are the other type of object that can be placed in the water. Unlike buoys, pilings do not yield to the tide, the tide yields to them. The tide will be disrupted by pilings it runs into as it moves along. On the grid, brighter lights correspond to deeper "waters".
 
-The app requires only an 8x16 varibright [monome grid](https://monome.org/docs/grid/) and the norns to run. However if connected, an [arc](https://monome.org/docs/arc/) can be used to expose four useful tide parameters for more immediate interaction, and provide visual feedback on those parameters. buoys also plays nice with both [crow](https://monome.org/docs/crow/) and midi devices.
+The app requires only an varibright [monome grid](https://monome.org/docs/grid/) (8x16 or 16x16) and the norns to run. However if connected, an [arc](https://monome.org/docs/arc/) can be used to expose four useful tide parameters for more immediate interaction, and provide visual feedback on those parameters. buoys also plays nice with both [crow](https://monome.org/docs/crow/) and midi devices.
 
-## Buoys 
+## Buoys
 
 Each buoy can be associated with a sound. As the buoy gets lifted up and down by the tide, any number of sonic parameters can be modulated proportionally to the momentary depth of the tide, such as playback volume, playback rate, filter cutoffs, and more. Additionally other modulations related to the momentary tide depth can be sent out via crow or midi.
 
@@ -36,7 +36,7 @@ Each buoy can be associated with a sound. As the buoy gets lifted up and down by
 **E3** - makes adjustments to the tide gap. The tide gap is how many tide advancements occur between new tides. In other words the overall time it takes between tides is (tide advance time * tide gap). It's possible to set a tide gap that is less than the width of the tide, so for instance a tide gap of 3 will just constantly cycle between the first 3 segments of the tide (1, 2, 3, 1, 2, 3...).
 
 ### Grid
-**Long press and hold** any key on the grid to edit a buoy there. You can press more than one key and buoys at all held spots will be edited. 
+**Long press and hold** any key on the grid to edit a buoy there. You can press more than one key and buoys at all held spots will be edited.
 
 **Short press** any grid key to toggle whats there - buoy vs piling vs nothing. If a buoy has never been edited on that key, then you'll just be toggling between piling and nothing.
 
