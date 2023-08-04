@@ -3,7 +3,7 @@
 --
 -- llllllll.co/t/37639
 --
--- grid required (varibright 128)
+-- grid required (varibright 128 or 256)
 -- enhanced by arc
 -- crow + midi capable
 --
@@ -45,7 +45,7 @@
 -- ring 3 = tide angle
 -- ring 4 = dispersion
 --
--- @lylem v1.2.0
+-- @lylem v1.3.0
 
 -- IDEAS FOR LATER VERSIONS
 -- 1. negative rates
@@ -83,7 +83,7 @@ local TIDE_GAP = 32
 local MAX_BRIGHTNESS = 15
 -- sinces waves move from left to right, they
 -- will appear flipped vs these definitions
-local BASE_TIDE_SHAPES = {
+local BASE_TIDE_SHAPES_8 = {
   {3, 8, 14, 12, 10, 8, 5, 1},
   {2, 5, 8, 11, 14, 0, 0, 0},
   {4, 9, 14, 9, 4, 0, 0, 0},
@@ -92,6 +92,24 @@ local BASE_TIDE_SHAPES = {
   {14, 0, 0, 0, 0, 0, 0, 0},
   {14, 0, 0, 10, 0, 0, 6, 0},
   {8, 8, 8, 8, 8, 8, 8, 8},
+}
+local BASE_TIDE_SHAPES_16 = {
+  {3, 8, 14, 12, 10, 8, 5, 1, 0, 0, 0, 0, 0, 0, 0, 0},
+  {2, 5, 8, 11, 14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+  {4, 9, 14, 9, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+  {14, 11, 8, 5, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+  {14, 9, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+  {14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+  {14, 0, 0, 10, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0},
+  {8, 8, 8, 8, 8, 8, 8, 8, 0, 0, 0, 0, 0, 0, 0, 0},
+  {3, 6, 8, 9, 9, 8, 7, 6, 5, 4, 3, 2, 2, 1, 1, 1},
+  {1, 1, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9, 9, 8, 6, 3},
+  {14, 9, 7, 6, 5, 4, 3, 3, 2, 2, 1, 1, 1, 1, 1, 1},
+  {1, 1, 1, 1, 1, 1, 2, 2, 3, 3, 4, 5, 6, 7, 9, 14},
+  {1, 2, 3, 4, 5, 6, 7, 8, 7, 6, 5, 4, 3, 2, 1, 0},
+  {8, 7, 6, 5, 4, 3, 2, 1, 2, 3, 4, 5, 6, 7, 8, 9},
+  {14, 0, 0, 0, 10, 0, 0, 0, 6, 0, 0, 0, 2, 0, 0, 0},
+  {4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4},
 }
 local COLLISION_OVERALL_DAMPING = 0.2
 local COLLISION_DIRECTIONAL_DAMPING = 0.5
@@ -103,7 +121,6 @@ local LONG_PRESS_TIME = 1.0
 local BACKGROUND_METRO_TIME = 0.1
 local AUTOSAVE_METRO_TIME = 60
 local POTENTIAL_DISPERSION_DIRECTIONS = { { x=1, y=0 }, { x=0, y=1 }, { x=-1, y=0 }, { x=0, y=-1 } }
-local META_MODE_KEYS = { { x=1, y=1 }, { x=1, y=8 }, { x=16, y=1 }, { x=16, y=8 } }
 local META_MODE_OPTIONS = { "choose sample folder", "clear inactive buoys", "save preset", "load preset", "exit" }
 local CROW_INPUT_OPTIONS = { "none", "clock", "run", "start/stop", "reset",
                              "cv tide height", "cv tide shape", "cv tide angle", "cv dispersion" }
@@ -779,7 +796,12 @@ function buoy_options()
 end
 
 a = arc.connect()
-g = grid.connect()
+for i = 1, 4 do
+  g = grid.connect(i)
+  if g.cols > 0 then
+    break
+  end
+end
 
 function init()
   init_all(true)
@@ -804,7 +826,7 @@ function init_all(full)
   displaying_buoys = false
   advance_time_dirty = false
   num_tide_shapes_in_sequence = 1
-  tide_shapes = BASE_TIDE_SHAPES
+  init_tide_shapes()
   tide_gap = TIDE_GAP
   tide_advance_time = ADVANCE_TIME
   smoothing_factor = SMOOTHING_FACTOR
@@ -857,21 +879,26 @@ function init_all(full)
   end
 end
 
+function init_tide_shapes()
+  tide_shapes = BASE_TIDE_SHAPES_8
+  if g.rows == 16 then
+    tide_shapes = BASE_TIDE_SHAPES_16
+  end
+end
+
 function init_preset_selections()
   current_preset_selection = { x=1, y=1 }
   existing_saved_presets = fresh_grid(nil)
 
   for _, data_file in pairs(util.scandir(norns.state.data)) do
     _, _, x, y = string.find(data_file, "^preset_(%d+)_(%d+).txt$")
-    if x and y then
+    if x and y and tonumber(y) <= g.rows then
       existing_saved_presets[tonumber(y)][tonumber(x)] = true
     end
   end
 end
 
 function modulo_base_one(num, modulus)
-  -- 8 is used a lot in this app, otherwise this is arbitrary
-  modulus = modulus or 8
   return ((num - 1) % modulus) + 1
 end
 
@@ -880,13 +907,13 @@ function tide_shape()
 
   for shape_index = 1, num_tide_shapes_in_sequence do
     first_shape_index, interpolation_fraction = math.modf(params:get("tide_shape_index") + shape_index - 1)
-    first_shape_index = modulo_base_one(first_shape_index)
-    second_shape_index = modulo_base_one(first_shape_index + 1)
+    first_shape_index = modulo_base_one(first_shape_index, g.rows)
+    second_shape_index = modulo_base_one(first_shape_index + 1, g.rows)
     first_shape = tide_shapes[first_shape_index]
     second_shape = tide_shapes[second_shape_index]
 
-    for i = 1, 8 do
-      result_index = i + ((shape_index - 1) * 8)
+    for i = 1, g.rows do
+      result_index = i + ((shape_index - 1) * g.rows)
       first_shape_part = first_shape[i] * (1 - interpolation_fraction)
       second_shape_part = second_shape[i] * interpolation_fraction
       result[result_index] = util.round(first_shape_part + second_shape_part)
@@ -995,8 +1022,8 @@ function max_depth_updated_action(max_depth)
   -- as a side effect of recomputing depths, particles_to_tide_depths will clear excess particles
   particles_to_tide_depths()
 
-  for i = 1, 8 do
-    for j = 1, 8 do
+  for i = 1, g.rows do
+    for j = 1, g.rows do
       tide_shapes[i][j] = math.min(tide_shapes[i][j], max_depth)
     end
   end
@@ -1040,17 +1067,17 @@ function init_params()
   params:add{ type = "option", id = "smoothing", name = "visual smoothing", options = { "off", "on" }, default = 2 }
   params:add{ type = "option", id = "pausing", name = "tides paused", options = { "pause buoys", "continue" } }
   params:add{ type = "option", id = "unpausing", name = "tides unpaused", options = { "resume", "reset buoys" } }
-  params:add_separator()
+  params:add_separator("arc_params", "arc params")
   params:add_control("tide_height_multiplier", "tide height multiplier", controlspec.new(0.0, 1.0, "lin", 0.01, 1.0, nil))
-  params:add_control("tide_shape_index", "tide shape index", controlspec.new(1.0, 8.99, "lin", 0.01, 1.0, nil))
+  params:add_control("tide_shape_index", "tide shape index", controlspec.new(1.0, g.rows + 0.99, "lin", 0.01, 1.0, nil))
   params:add{ type = "number", id = "angle", name = "wave angle", min = -60, max = 60, default = 0, formatter = degree_formatter }
   params:add{ type = "number", id = "dispersion", name = "dispersion", min = -25, max = 25, default = 10, action = dispersion_updated_action }
-  params:add_separator()
+  params:add_separator("crow_params", "crow")
   params:add{ type = "option", id = "crow_input_1", name = "crow input 1", options = CROW_INPUT_OPTIONS,
               action = crow_input_1_updated_action, default = 2 }
   params:add{ type = "option", id = "crow_input_2", name = "crow input 2", options = CROW_INPUT_OPTIONS,
               action = crow_input_2_updated_action }
-  params:add_separator()
+  params:add_separator("other_params", "other")
   params:add{ type = "number", id = "min_bright", name = "background brightness", min = 1, max = 3, default = 1 }
   params:add{ type = "number", id = "max_depth", name = "max depth", min = 8, max = 14, default = 14, action = max_depth_updated_action }
   params:add{ type = "option", id = "arc_orientation", name = "arc orientation", options = { "horizontal", "vertical" } }
@@ -1226,7 +1253,7 @@ function process_crow_input_stream(idx, v)
   if input_mode == 6 then  -- cv tide height
     params:set("tide_height_multiplier", util.linlin(0.0, 5.0, 0.0, 1.0, v))
   elseif input_mode == 7 then  -- cv tide shape
-    params:set("tide_shape_index", util.linlin(0.0, 5.0, 1.0, 8.99, v))
+    params:set("tide_shape_index", util.linlin(0.0, 5.0, 1.0, g.rows + 0.99, v))
   elseif input_mode == 8 then  -- cv tide tide angle
     params:set("angle", util.linlin(-5.0, 5.0, -60, 60, v))
   elseif input_mode == 9 then  -- cv dispersion
@@ -1475,14 +1502,6 @@ function mark_buoy_being_edited(x, y)
 end
 
 function update_held_grid_keys()
-  -- special case for if the exact set of keys are held to enter meta mode
-  if meta_mode_keys_held() then
-    held_grid_keys = fresh_grid(0)
-    meta_mode = true
-    redraw()
-    return
-  end
-
   -- if we're editing tide shapes we don't want to trigger buoy editing
   if editing_tide_shapes() then
     return
@@ -1525,30 +1544,6 @@ function update_held_grid_keys()
 
     redraw()
   end
-end
-
-function meta_mode_keys_held()
-  keys_held = grid_keys_held()
-
-  if #keys_held ~= #META_MODE_KEYS then
-    return false
-  end
-
-  for _, key_held in pairs(keys_held) do
-    x, y = key_held[1], key_held[2]
-    is_meta_mode_key = false
-    for _, meta_mode_key in pairs(META_MODE_KEYS) do
-      if x == meta_mode_key.x and y == meta_mode_key.y then
-        is_meta_mode_key = true
-      end
-    end
-
-    if not is_meta_mode_key then
-      return false
-    end
-  end
-
-  return true
 end
 
 function update_dispersion_ui()
@@ -1651,7 +1646,12 @@ function key(n, z)
       meta_mode = false
     end
   elseif meta_mode then
-    if z == 1 or n == 2 then
+    if n == 1 and z == 1 then
+      exit_meta_mode()
+      return
+    end
+
+    if z == 1 or n ~= 3 then
       return
     end
 
@@ -1673,6 +1673,11 @@ function key(n, z)
       exit_meta_mode()
     end
   else
+    if n == 1 and z == 1 then
+      meta_mode = true
+      redraw()
+    end
+
     if z == 0 and not was_editing_tides then
       if n == 2 then
         displaying_buoys = not displaying_buoys
@@ -1738,20 +1743,37 @@ function load_preset()
     return
   end
 
-  pilings = load_data.pilings
+  pilings = fresh_grid(0)
+  for x = 1, g.cols do
+    for y = 1, g.rows do
+      if load_data.pilings[y] then
+        pilings[y][x] = load_data.pilings[y][x]
+      end
+    end
+  end
   tide_gap = load_data.tide_gap
   tide_advance_time = load_data.tide_advance_time
   external_clock_multiplier = load_data.external_clock_multiplier
-  tide_shapes = load_data.tide_shapes
-  num_tide_shapes_in_sequence = load_data.num_tide_shapes_in_sequence
-
+  init_tide_shapes()
+  for i = 1, g.rows do
+    for j = 1, g.rows do
+      if load_data.tide_shapes[i] and load_data.tide_shapes[i][j] then
+        tide_shapes[i][j] = load_data.tide_shapes[i][j]
+      end
+    end
+  end
+  num_tide_shapes_in_sequence = math.min(load_data.num_tide_shapes_in_sequence, g.rows)
   if load_data.last_folder_loaded then
     load_sound_folder(load_data.last_folder_loaded)
   end
 
   for x = 1, g.cols do
     for y = 1, g.rows do
-      buoy_data = load_data.buoys[y][x]
+      buoy_data = nil
+      if load_data.buoys[y] then
+        buoy_data = load_data.buoys[y][x]
+      end
+
       if buoy_data then
         buoys[y][x] = Buoy:new()
         buoys[y][x].active = buoy_data.active
@@ -2284,15 +2306,26 @@ function draw_preset_select_background()
     end
 
     -- draw buoys and pilings
+    draw_small = g.rows == 16
     for x = 1, g.cols do
       for y = 1, g.rows do
-        buoy_data = preview_data.buoys[y][x]
-        if preview_data.pilings[y][x] == 1 then
-          screen.level(1)
-          draw_piling(x, y)
-        elseif buoy_data and buoy_data.active then
-          screen.level(2)
-          draw_buoy(x, y, false, 2)
+        if preview_data.pilings[y] then
+          buoy_data = preview_data.buoys[y][x]
+          if preview_data.pilings[y][x] == 1 then
+            screen.level(1)
+            if draw_small then
+              draw_piling_small(x, y)
+            else
+              draw_piling(x, y)
+            end
+          elseif buoy_data and buoy_data.active then
+            screen.level(2)
+            if draw_small then
+              draw_buoy_small(x, y, false, 2)
+            else
+              draw_buoy(x, y, false, 2)
+            end
+          end
         end
       end
     end
@@ -2436,8 +2469,16 @@ function redraw_regular_screen()
   if params:get("channel_style") == 2 then
     redraw_flume_edges()
   end
-
   screen.level(MAX_BRIGHTNESS)
+
+  if g.rows == 8 then
+    redraw_regular_screen_128()
+  elseif g.rows == 16 then
+    redraw_regular_screen_256()
+  end
+end
+
+function redraw_regular_screen_128()
   for x = 1, g.cols do
     for y = 1, g.rows do
       if is_piling(x, y) then
@@ -2449,8 +2490,25 @@ function redraw_regular_screen()
   end
 end
 
+function redraw_regular_screen_256()
+  for x = 1, g.cols do
+    for y = 1, g.rows do
+      if is_piling(x, y) then
+        draw_piling_small(x, y)
+      elseif buoys[y][x] and buoys[y][x].active then
+        draw_buoy_small(x, y, buoys[y][x]:light_up())
+      end
+    end
+  end
+end
+
 function draw_piling(x, y)
   screen.circle(x * 8 - 4, y * 8 - 4, 3.4)
+  screen.fill()
+end
+
+function draw_piling_small(x, y)
+  screen.circle(x * 4 + 30, y * 4 - 2, 1.7)
   screen.fill()
 end
 
@@ -2465,6 +2523,22 @@ function draw_buoy(x, y, lit_up, dim_brightness)
   level = lit_up and MAX_BRIGHTNESS or dim_brightness
   screen.level(level)
   screen.rect(x * 8 - 4.9, y * 8 - 4.9, 2.0, 2.0)
+  screen.fill()
+
+  screen.level(MAX_BRIGHTNESS)
+end
+
+function draw_buoy_small(x, y, lit_up, dim_brightness)
+  dim_brightness = dim_brightness or 5
+  screen.rect(x * 4 + 28.5, y * 4 - 3.5, 3.2, 3.2)
+  screen.fill()
+  screen.level(0)
+  screen.rect(x * 4 + 29.1, y * 4 - 2.9, 2.0, 2.0)
+  screen.fill()
+
+  level = lit_up and MAX_BRIGHTNESS or dim_brightness
+  screen.level(level)
+  screen.rect(x * 4 + 29.6, y * 4 - 2.4, 1.0, 1.0)
   screen.fill()
 
   screen.level(MAX_BRIGHTNESS)
@@ -2512,6 +2586,7 @@ function redraw_arc_lights()
 
   -- wave shapes + interpolation
   shape = tide_shape()
+  -- TODO: update this for bigger tide shapes possible on 256 grids
   for i = 1, 8 do
     for j = 1, 4 do
       a:led(2, 12 + j + (i * 4) + orientation_offset, shape[i])
@@ -2543,12 +2618,10 @@ end
 
 function edited_shape_index()
   result = util.round(params:get("tide_shape_index"))
-  return result == 9 and 1 or result
+  return result == (g.rows + 1) and 1 or result
 end
 
 function phase_in_wrapped_range(target_index, low_index, high_index, wrap_point)
-  wrap_point = wrap_point or 8
-
   if high_index > low_index then
     if (target_index >= low_index) and (target_index <= high_index) then
       range_size = high_index - low_index + 1
@@ -2571,6 +2644,7 @@ end
 function redraw_grid_tide_shape_editor()
   current_index = edited_shape_index()
   current_shape = tide_shapes[current_index]
+  rotated = g.rows == 16
 
   if insanity_mode then
     brightness = blink_brightness()
@@ -2578,35 +2652,68 @@ function redraw_grid_tide_shape_editor()
       g:led(1, y, brightness)
     end
   elseif num_tide_shapes_in_sequence == 1 then
-    for y = 1, g.rows do
-      brightness = y == current_index and MAX_BRIGHTNESS or 0
-      g:led(1, y, brightness)
-      g:led(16, y, 0)
+    if rotated then
+      for x = 1, g.cols do
+        brightness = x == (17 - current_index) and MAX_BRIGHTNESS or 0
+        g:led(x, 1, brightness)
+        g:led(x, 16, 0)
+      end
+    else
+      for y = 1, g.rows do
+        brightness = y == current_index and MAX_BRIGHTNESS or 0
+        g:led(1, y, brightness)
+        g:led(16, y, 0)
+      end
     end
   else
     first_in_sequence = util.round(params:get("tide_shape_index"))
-    last_in_sequence = modulo_base_one(first_in_sequence + num_tide_shapes_in_sequence - 1)
+    last_in_sequence = modulo_base_one(first_in_sequence + num_tide_shapes_in_sequence - 1, g.rows)
     reference_time = util.time() % 2
 
-    for y = 1, g.rows do
-      brightness_phase = phase_in_wrapped_range(y, first_in_sequence, last_in_sequence)
-      if brightness_phase then
-        brightness = util.round(MAX_BRIGHTNESS * (1 - reference_time + brightness_phase))
-        brightness = (brightness >= 0 and brightness <= MAX_BRIGHTNESS) and brightness or 0
-      else
-        brightness = 0
+    if rotated then
+      for x = 1, g.cols do
+        brightness_phase = phase_in_wrapped_range(x, 17 - last_in_sequence, 17 - first_in_sequence, g.cols)
+        if brightness_phase then
+          brightness_phase = 1 - brightness_phase
+          brightness = util.round(MAX_BRIGHTNESS * (1 - reference_time + brightness_phase))
+          brightness = (brightness >= 0 and brightness <= MAX_BRIGHTNESS) and brightness or 0
+        else
+          brightness = 0
+        end
+
+        g:led(x, 1, brightness)
       end
+    else
+      for y = 1, g.rows do
+        brightness_phase = phase_in_wrapped_range(y, first_in_sequence, last_in_sequence, g.rows)
+        if brightness_phase then
+          brightness = util.round(MAX_BRIGHTNESS * (1 - reference_time + brightness_phase))
+          brightness = (brightness >= 0 and brightness <= MAX_BRIGHTNESS) and brightness or 0
+        else
+          brightness = 0
+        end
 
-      g:led(1, y, brightness)
+        g:led(1, y, brightness)
+      end
     end
   end
 
-  for x = 2, g.cols - 1 do
-    for y = 1, g.rows do
-      brightness = (x + current_shape[y]) >= 16 and 8 or 0
-      g:led(x, y, brightness)
+  if rotated then
+    for y = 2, g.rows - 1 do
+      for x = 1, g.cols do
+        brightness = (y + current_shape[17 - x]) >= 16 and 8 or 0
+        g:led(x, y, brightness)
+      end
+    end
+  else
+    for x = 2, g.cols - 1 do
+      for y = 1, g.rows do
+        brightness = (x + current_shape[y]) >= 16 and 8 or 0
+        g:led(x, y, brightness)
+      end
     end
   end
+
   g:refresh()
 end
 
@@ -2652,16 +2759,14 @@ function redraw_grid_main_view()
 end
 
 function fresh_grid(b)
-  return {
-    {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
-    {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
-    {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
-    {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
-    {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
-    {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
-    {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
-    {b, b, b, b, b, b, b, b, b, b, b, b, b, b, b, b},
-  }
+  local gr = {}
+  for y = 1, g.rows do
+    gr[y] = {}
+    for x = 1, g.cols do
+      gr[y][x] = b
+    end
+  end
+  return gr
 end
 
 -- probability a fair coin flip is heads
@@ -3427,19 +3532,33 @@ g.key = function(x, y, z)
   end
 
   if meta_mode then
-    -- TODO: make this work so as not to add buoys
-    -- when first entering meta mode
-    -- if z == 0 then
-    --   toggle_buoy_piling_nothing(x, y)
-    -- end
-
     return
   end
 
   held_grid_keys[y][x] = z
 
   if editing_tide_shapes() then
-    if z == 1 then
+    if g.rows == 16 and z == 1 then
+      if y == 1 then
+        new_wave_sequence = false
+        for x_held = 1, g.rows do
+          if x ~= x_held then
+            if held_grid_keys[1][x_held] == 1 then
+              new_wave_sequence = true
+              params:set("tide_shape_index", (17 - x_held))
+              num_tide_shapes_in_sequence = ((x_held - x) % g.cols) + 1
+            end
+          end
+        end
+
+        if not new_wave_sequence then
+          params:set("tide_shape_index", 17 - x)
+          num_tide_shapes_in_sequence = 1
+        end
+      else
+        tide_shapes[edited_shape_index()][17 - x] = math.min(16 - y, params:get("max_depth"))
+      end
+    elseif z == 1 then
       if x == 1 then
         new_wave_sequence = false
         toggling_insanity_mode = true
@@ -3452,7 +3571,7 @@ g.key = function(x, y, z)
             if held_grid_keys[y_held][1] == 1 then
               new_wave_sequence = true
               params:set("tide_shape_index", y_held)
-              num_tide_shapes_in_sequence = ((y - y_held) % 8) + 1
+              num_tide_shapes_in_sequence = ((y - y_held) % g.rows) + 1
             end
           end
         end
@@ -3491,11 +3610,12 @@ function a.delta(n, d)
   elseif n == 2 then
     -- we circumvent the simpler params:delta approach in order to support
     -- circular transitions between the 8 tide shapes (8->1 and 1->8)
+    -- (or 16 tide shapes for a 256 grid)
     tide_shape_index = params:get("tide_shape_index") + (d * 0.01)
-    if tide_shape_index >= 9 then
-      params:set("tide_shape_index", tide_shape_index - 8)
+    if tide_shape_index >= g.rows + 1 then
+      params:set("tide_shape_index", tide_shape_index - g.rows)
     elseif tide_shape_index < 1 then
-      params:set("tide_shape_index", tide_shape_index + 8)
+      params:set("tide_shape_index", tide_shape_index + g.rows)
     else
       params:set("tide_shape_index", tide_shape_index)
     end
