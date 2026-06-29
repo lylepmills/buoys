@@ -45,7 +45,7 @@
 -- ring 3 = tide angle
 -- ring 4 = dispersion
 --
--- @lylem v1.3.0
+-- @lylem v1.3.1
 
 -- IDEAS FOR LATER VERSIONS
 -- 1. negative rates
@@ -2265,6 +2265,14 @@ function grid_transition(proportion)
   return result
 end
 
+function current_grid_lighting()
+  if params:get("smoothing") == 2 then
+    return grid_transition(smoothing_counter / smoothing_factor)
+  end
+
+  return new_grid_lighting
+end
+
 function redraw()
   if file_select_active then
     fileselect.redraw()
@@ -2718,7 +2726,7 @@ function redraw_grid_tide_shape_editor()
 end
 
 function redraw_grid_preset_select_view()
-  grid_lighting = grid_transition(smoothing_counter / smoothing_factor)
+  grid_lighting = current_grid_lighting()
 
   for x = 1, g.cols do
     for y = 1, g.rows do
@@ -2744,7 +2752,7 @@ function redraw_grid_preset_select_view()
 end
 
 function redraw_grid_main_view()
-  grid_lighting = grid_transition(smoothing_counter / smoothing_factor)
+  grid_lighting = current_grid_lighting()
 
   for x = 1, g.cols do
     for y = 1, g.rows do
@@ -3216,20 +3224,24 @@ function Buoy:update_sound()
   self.sample_name = details.name
   self.sample_start_time = start_loc
   self.sample_end_time = end_loc
-  self:update_sound_loop_points()
+  self:update_sound_loop_points(false)
   start_pos = self:effective_rate() >= 0 and self.loop_start_time or self.loop_end_time
-  softcut.loop_start(self.softcut_buffer, self.loop_start_time)
-  softcut.loop_end(self.softcut_buffer, self.loop_end_time)
   softcut.position(self.softcut_buffer, start_pos)
 end
 
-function Buoy:update_sound_loop_points()
+function Buoy:update_sound_loop_points(reset_position)
+  if reset_position == nil then
+    reset_position = true
+  end
+
   sample_length = self.sample_end_time - self.sample_start_time
   self.loop_start_time = self.sample_start_time + sample_length * (self.options["sound start point %"] / 100)
   self.loop_end_time = self.sample_start_time + sample_length * (self.options["sound end point %"] / 100)
   softcut.loop_start(self.softcut_buffer, self.loop_start_time)
   softcut.loop_end(self.softcut_buffer, self.loop_end_time)
-  softcut.position(self.softcut_buffer, self.loop_start_time)
+  if reset_position then
+    softcut.position(self.softcut_buffer, self.loop_start_time)
+  end
 end
 
 function Buoy:sound_details()
